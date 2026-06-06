@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import shutil
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,10 @@ def safe_filename(filename: str, fallback_ext: str = ".jpg") -> str:
 def image_metadata(path: Path) -> tuple[int | None, int | None, str]:
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     try:
-        with Image.open(path) as image:
-            return image.width, image.height, mime_type
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(path) as image:
+                return image.width, image.height, mime_type
     except Exception:
         return None, None, mime_type
 

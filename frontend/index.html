@@ -20,11 +20,12 @@
           </div>
         </div>
         <nav class="top-actions" aria-label="主要入口">
-          <button class="ghost-button" type="button" data-open-history>最近生成</button>
+          <button class="ghost-button" type="button" data-open-history disabled title="MVP阶段暂不开放完整历史记录">最近生成</button>
           <label class="api-field">
             <span>API地址</span>
             <input id="apiBaseInput" type="url" inputmode="url" />
           </label>
+          <button class="ghost-button" type="button" id="resetApiBaseBtn">恢复默认</button>
         </nav>
       </header>
 
@@ -35,8 +36,8 @@
             <strong>1080 × 1920</strong>
           </article>
           <article>
-            <span>上传融合场景图</span>
-            <strong>1 张</strong>
+            <span>素材来源</span>
+            <strong>产品图 / 场景图</strong>
           </article>
           <article>
             <span>生成链路</span>
@@ -139,17 +140,45 @@
               <div class="screen-header">
                 <div>
                   <p class="eyebrow">素材上传</p>
-                  <h2 id="assetsTitle">上传融合场景图并选择品牌素材</h2>
-                  <p>融合场景图、Logo、二维码和底部宣传条会共同决定最终海报能否直接发布。</p>
+                  <h2 id="assetsTitle">选择产品素材并选择品牌素材</h2>
+                  <p>可直接使用素材库产品图，也可以上传产品图或整张场景图。</p>
                 </div>
                 <button class="secondary-button" type="button" id="reloadAssetsBtn">刷新素材库</button>
               </div>
 
+              <label class="wide-field">
+                <span>产品选择</span>
+                <select id="assetProductSelect"></select>
+              </label>
+
+              <div class="source-mode-group" role="radiogroup" aria-label="素材来源">
+                <label>
+                  <input type="radio" name="sourceMode" value="system_product" checked />
+                  <span>系统产品图</span>
+                </label>
+                <label>
+                  <input type="radio" name="sourceMode" value="upload_product" />
+                  <span>上传产品图</span>
+                </label>
+                <label>
+                  <input type="radio" name="sourceMode" value="scene_image" />
+                  <span>上传整张场景图</span>
+                </label>
+              </div>
+
+              <section class="asset-section" id="systemProductSection">
+                <div class="section-title-row">
+                  <h3>系统产品图</h3>
+                  <button class="ghost-button small" type="button" id="reloadProductAssetsBtn">刷新产品图</button>
+                </div>
+                <div class="choice-grid product-library-grid" id="systemProductAssetsGrid"></div>
+              </section>
+
               <div class="upload-zone" id="dropZone">
                 <input id="productFileInput" type="file" accept="image/*" multiple hidden />
                 <div>
-                  <strong>拖拽或选择 1 张融合场景图</strong>
-                  <p>单张限制 10MB，建议使用已完成产品融合的 1080x1920 竖版场景图。</p>
+                  <strong id="uploadZoneTitle">拖拽或选择产品图</strong>
+                  <p id="uploadZoneHint">单张限制 10MB，支持 JPG、PNG、WEBP。</p>
                 </div>
                 <button class="secondary-button" type="button" id="pickProductFilesBtn">选择图片</button>
               </div>
@@ -236,14 +265,25 @@
                 </label>
               </div>
 
-              <div class="form-grid two">
+              <div class="copy-mode-group" role="radiogroup" aria-label="文案生成方式">
                 <label>
-                  <span>主标题偏好</span>
-                  <input id="titlePreferenceInput" type="text" maxlength="10" placeholder="可留空，不超过10字" />
+                  <input type="radio" name="copyMode" value="ai" checked />
+                  <span>AI 生成文案</span>
                 </label>
                 <label>
-                  <span>副标题偏好</span>
-                  <input id="subtitlePreferenceInput" type="text" maxlength="30" placeholder="可留空，不超过30字" />
+                  <input type="radio" name="copyMode" value="manual" />
+                  <span>手动填写文案</span>
+                </label>
+              </div>
+
+              <div class="form-grid two">
+                <label>
+                  <span id="titlePreferenceLabel">主标题偏好</span>
+                  <input id="titlePreferenceInput" type="text" maxlength="18" placeholder="可留空，不超过18字" />
+                </label>
+                <label>
+                  <span id="subtitlePreferenceLabel">副标题偏好</span>
+                  <input id="subtitlePreferenceInput" type="text" maxlength="42" placeholder="可留空，不超过42字" />
                 </label>
               </div>
 
@@ -302,6 +342,10 @@
                         <dd id="resultPosterUrl">等待后端返回</dd>
                       </div>
                       <div>
+                        <dt>AI融合方式</dt>
+                        <dd id="resultFusion">等待后端返回</dd>
+                      </div>
+                      <div>
                         <dt>错误提示</dt>
                         <dd id="resultError">无</dd>
                       </div>
@@ -313,11 +357,11 @@
                     <div class="form-grid one">
                       <label>
                         <span>主标题</span>
-                        <input id="previewTitleInput" type="text" maxlength="10" placeholder="等待后端返回" readonly />
+                        <input id="previewTitleInput" type="text" maxlength="18" placeholder="等待后端返回" />
                       </label>
                       <label>
                         <span>副标题</span>
-                        <input id="previewSubtitleInput" type="text" maxlength="30" placeholder="等待后端返回" readonly />
+                        <input id="previewSubtitleInput" type="text" maxlength="42" placeholder="等待后端返回" />
                       </label>
                       <label hidden>
                     <span>场景图切换</span>
@@ -340,7 +384,7 @@
                         <select id="previewBottomBarSelect"></select>
                       </label>
                     </div>
-                    <p class="hint">此处只展示后端生成结果，不能在前端改写或补造文案。</p>
+                    <p class="hint">可按发布语气微调文案，修改后会重新做合规检查；未通过时下载会保持禁用。</p>
                   </section>
 
                   <section>

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class CopyPreference(BaseModel):
+    mode: Literal["ai", "manual"] = "ai"
     title: str = ""
     subtitle: str = ""
 
@@ -28,3 +31,8 @@ class ComplianceCheckRequest(BaseModel):
     subtitle: str = ""
     product_id: str | None = None
     node_id: str | None = None
+
+
+class PosterTaskRerenderRequest(BaseModel):
+    title: str = ""
+    subtitle: str = ""

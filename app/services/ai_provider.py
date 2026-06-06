@@ -7,6 +7,7 @@ import random
 import re
 import urllib.error
 import urllib.request
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -504,15 +505,18 @@ class OpenAICompatibleAiProvider(AiProvider):
 
         output_dir.mkdir(parents=True, exist_ok=True)
         image_path = output_dir / "ai_scene.png"
-        response = post_openai_compatible_json(
-            base_url=self.settings.base_url,
-            endpoint=self.settings.image_fusion_endpoint,
-            api_key=self.settings.image_api_key,
-            body={
+        prompt = append_image_constraints(
+            prompt=prompt_result.positive_prompt,
+            negative_prompt=prompt_result.negative_prompt,
+            canvas_size=canvas_size,
+            safe_zones=safe_zones,
+        )
+        if self.settings.image_fusion_request_mode == "json_base64":
+            body = {
                 "model": self.settings.image_model,
                 "mode": "image_edit",
                 "size": self.settings.image_output_size,
-                "prompt": prompt_result.positive_prompt,
+                "prompt": prompt,
                 "negative_prompt": prompt_result.negative_prompt,
                 "product_image_b64": encode_image_base64(transparent_product_png),
                 "scene_reference_b64": encode_image_base64(scene_reference_path) if scene_reference_path else None,
@@ -530,17 +534,45 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "product_id": product.get("id"),
                     "contact_text": payload.contact_text,
                 },
-            },
-            timeout_seconds=self.settings.image_timeout_seconds,
-        )
+            }
+            if self.settings.image_response_format:
+                body["response_format"] = self.settings.image_response_format
+            response = post_openai_compatible_json(
+                base_url=self.settings.base_url,
+                endpoint=self.settings.image_fusion_endpoint,
+                api_key=self.settings.image_api_key,
+                body=body,
+                timeout_seconds=self.settings.image_timeout_seconds,
+            )
+        else:
+            image_files = [transparent_product_png]
+            if scene_reference_path:
+                image_files.append(scene_reference_path)
+            response = post_openai_compatible_multipart_json(
+                base_url=self.settings.base_url,
+                endpoint=self.settings.image_fusion_endpoint,
+                api_key=self.settings.image_api_key,
+                fields={
+                    "model": self.settings.image_model,
+                    "prompt": prompt,
+                    "size": self.settings.image_output_size,
+                    "n": "1",
+                    "quality": self.settings.image_quality,
+                    "output_format": self.settings.image_output_format,
+                    "response_format": self.settings.image_response_format,
+                },
+                image_files=image_files,
+                image_field=self.settings.image_file_field,
+                timeout_seconds=self.settings.image_timeout_seconds,
+            )
         write_response_image(response=response, image_path=image_path, timeout_seconds=self.settings.image_timeout_seconds)
         return SceneFusionResult(
             image_path=image_path,
-            prompt=prompt_result.positive_prompt,
+            prompt=prompt,
             negative_prompt=prompt_result.negative_prompt,
             provider="openai_compatible_image",
             model=self.settings.image_model,
-            mode="image_edit_json_reference",
+            mode=f"image_edit_{self.settings.image_fusion_request_mode}",
             prompt_provider=prompt_result.provider,
             used_product_asset_id=product_asset_id,
             preserve_product_pixels=True,
@@ -560,17 +592,20 @@ class OpenAICompatibleAiProvider(AiProvider):
         image_path = output_dir / "ai_background.jpg"
         prompt = build_background_prompt(node=node, payload=payload)
         negative_prompt = build_negative_prompt()
+        body = {
+            "model": self.settings.image_model,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "n": 1,
+            "size": self.settings.image_output_size,
+        }
+        if self.settings.image_response_format:
+            body["response_format"] = self.settings.image_response_format
         response = post_openai_compatible_json(
             base_url=self.settings.base_url,
             endpoint=self.settings.image_generation_endpoint,
             api_key=self.settings.image_api_key,
-            body={
-                "model": self.settings.image_model,
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-                "n": 1,
-                "size": self.settings.image_output_size,
-            },
+            body=body,
             timeout_seconds=self.settings.image_timeout_seconds,
         )
         write_response_image(response=response, image_path=image_path, timeout_seconds=self.settings.image_timeout_seconds)
@@ -864,15 +899,114 @@ def post_openai_compatible_json(
         raise AiProviderError("中转站返回不是有效 JSON") from exc
 
 
+def post_openai_compatible_multipart_json(
+    *,
+    base_url: str,
+    endpoint: str,
+    api_key: str,
+    fields: dict[str, str],
+    image_files: list[Path],
+    image_field: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    boundary = f"----festival-poster-{uuid4().hex}"
+    body = bytearray()
+
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for index, image_path in enumerate(image_files):
+        if not image_path or not image_path.exists():
+            continue
+        field_name = image_field
+        if "{index}" in field_name:
+            field_name = field_name.replace("{index}", str(index))
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            (
+                f'Content-Disposition: form-data; name="{field_name}"; '
+                f'filename="{image_path.name}"\r\n'
+            ).encode("utf-8")
+        )
+        body.extend(b"Content-Type: image/png\r\n\r\n")
+        body.extend(image_path.read_bytes())
+        body.extend(b"\r\n")
+
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise AiProviderError(f"中转站图片编辑 HTTP 错误：{exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise AiProviderError(f"中转站图片编辑连接失败：{exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise AiProviderError("中转站图片编辑返回不是有效 JSON") from exc
+
+
 def write_response_image(response: dict[str, Any], image_path: Path, timeout_seconds: int) -> None:
-    first_image = response.get("data", [{}])[0]
-    if first_image.get("b64_json"):
-        image_path.write_bytes(base64.b64decode(first_image["b64_json"]))
-        return
-    if first_image.get("url"):
-        image_path.write_bytes(download_image(first_image["url"], timeout_seconds))
+    first_image = {}
+    data = response.get("data")
+    if isinstance(data, list) and data:
+        first_image = data[0] if isinstance(data[0], dict) else {}
+    candidates = [
+        first_image.get("b64_json"),
+        first_image.get("base64"),
+        first_image.get("image"),
+        response.get("b64_json"),
+        response.get("base64"),
+        response.get("image"),
+    ]
+    for candidate in candidates:
+        if candidate:
+            image_path.write_bytes(base64.b64decode(strip_data_url(str(candidate))))
+            return
+    url = first_image.get("url") or response.get("url")
+    if url:
+        image_path.write_bytes(download_image(str(url), timeout_seconds))
         return
     raise AiProviderError("图片接口返回缺少 b64_json 或 url")
+
+
+def strip_data_url(value: str) -> str:
+    if "," in value and value.strip().lower().startswith("data:"):
+        return value.split(",", 1)[1]
+    return value
+
+
+def append_image_constraints(
+    *,
+    prompt: str,
+    negative_prompt: str,
+    canvas_size: tuple[int, int],
+    safe_zones: dict[str, tuple[int, int, int, int]],
+) -> str:
+    zones = normalize_safe_zones(safe_zones)
+    return (
+        f"{prompt}\n\n"
+        f"画布比例：竖版 {canvas_size[0]}x{canvas_size[1]}。"
+        "请把参考产品自然融入真实营销场景，像原本就在场景里一样，有合理接触面、遮挡关系、阴影、环境光和景深。"
+        "例如春节可生成一家人围坐团圆饭的温暖场景，产品自然放在餐边柜、厨房台面或餐厅角落，不要突兀。"
+        "保留参考产品的真实外观、品牌结构、材质和比例，不要把产品变成其他物体。"
+        f"顶部和底部预留海报排版安全区：{json.dumps(zones, ensure_ascii=False)}。"
+        "画面本身不要生成任何文字、汉字、英文、Logo、二维码、水印、价格标签或促销标签。"
+        f"负向约束：{negative_prompt}"
+    )
 
 
 def download_image(url: str, timeout_seconds: int) -> bytes:

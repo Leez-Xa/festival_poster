@@ -144,6 +144,7 @@ def main() -> None:
                 "node_id": "node_lidong",
                 "product_id": "product_k2",
                 "template_id": "template_v1_vertical_standard",
+                "scene_asset_id": None,
                 "product_asset_ids": [asset_id],
                 "logo_asset_id": logos["data"]["items"][0]["id"],
                 "qrcode_asset_id": qrcodes["data"]["items"][0]["id"],
@@ -152,6 +153,7 @@ def main() -> None:
                 "scene_prompt": "请让产品融入立冬暖色营销场景，产品明显可见并与背景和谐",
                 "custom_requirement": "暖色，有高级感，适合朋友圈传播",
                 "copy_preference": {
+                    "mode": "ai",
                     "title": "立冬已至",
                     "subtitle": "暖心健康水，陪伴每一天",
                 },

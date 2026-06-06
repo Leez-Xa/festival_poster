@@ -10,6 +10,7 @@ STORAGE_DIR = ROOT_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 GENERATED_DIR = STORAGE_DIR / "generated"
 SYSTEM_DIR = STORAGE_DIR / "system"
+DB_PATH = STORAGE_DIR / "festival_poster.sqlite3"
 
 API_PREFIX = "/api/v1"
 MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
@@ -58,9 +59,20 @@ class AISettings:
         self.image_model = os.getenv("GPT_IMAGE_MODEL", "image2.0-mock").strip()
         self.image_generation_endpoint = os.getenv("AI_IMAGE_GENERATION_ENDPOINT", "/images/generations").strip()
         self.image_fusion_endpoint = os.getenv("AI_IMAGE_FUSION_ENDPOINT", "/images/edits").strip()
+        self.image_fusion_request_mode = os.getenv("AI_IMAGE_FUSION_REQUEST_MODE", "multipart").strip().lower()
+        self.image_file_field = os.getenv("AI_IMAGE_FILE_FIELD", "image[]").strip() or "image[]"
         self.image_output_size = os.getenv("AI_IMAGE_OUTPUT_SIZE", "1024x1792").strip() or "1024x1792"
+        self.image_quality = os.getenv("AI_IMAGE_QUALITY", "auto").strip() or "auto"
+        self.image_output_format = os.getenv("AI_IMAGE_OUTPUT_FORMAT", "png").strip() or "png"
+        self.image_response_format = os.getenv("AI_IMAGE_RESPONSE_FORMAT", "b64_json").strip()
         self.text_timeout_seconds = _read_timeout(os.getenv("AI_TEXT_TIMEOUT_SECONDS", "30"), default=30)
-        self.image_timeout_seconds = _read_timeout(os.getenv("AI_IMAGE_TIMEOUT_SECONDS", "90"), default=90)
+        self.image_timeout_seconds = _read_timeout(
+            os.getenv("AI_IMAGE_TIMEOUT_SECONDS", "120"),
+            default=120,
+            minimum=120,
+            maximum=120,
+        )
+        self.require_image_fusion = _read_bool(os.getenv("AI_REQUIRE_IMAGE_FUSION", "true"), default=True)
 
     @property
     def has_text_credentials(self) -> bool:
@@ -80,9 +92,15 @@ class AISettings:
             "image_model": self.image_model,
             "image_generation_endpoint": self.image_generation_endpoint,
             "image_fusion_endpoint": self.image_fusion_endpoint,
+            "image_fusion_request_mode": self.image_fusion_request_mode,
+            "image_file_field": self.image_file_field,
             "image_output_size": self.image_output_size,
+            "image_quality": self.image_quality,
+            "image_output_format": self.image_output_format,
+            "image_response_format": self.image_response_format,
             "text_timeout_seconds": self.text_timeout_seconds,
             "image_timeout_seconds": self.image_timeout_seconds,
+            "require_image_fusion": self.require_image_fusion,
         }
 
 
@@ -90,12 +108,21 @@ def get_ai_settings() -> AISettings:
     return AISettings()
 
 
-def _read_timeout(value: str, default: int) -> int:
+def _read_timeout(value: str, default: int, *, minimum: int = 1, maximum: int = 180) -> int:
     try:
         timeout = int(value)
     except ValueError:
         return default
-    return max(1, min(timeout, 180))
+    return max(minimum, min(timeout, maximum))
+
+
+def _read_bool(value: str, default: bool) -> bool:
+    clean = value.strip().lower()
+    if clean in {"1", "true", "yes", "y", "on"}:
+        return True
+    if clean in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def _is_real_secret(value: str) -> bool:

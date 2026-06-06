@@ -1,6 +1,11 @@
 const TASK_STATUSES = new Set(["pending", "processing", "success", "failed"]);
+const AI_IMAGE_WARNING_MS = 120000;
 const API_BASE_FALLBACK = (() => {
-  if (location.origin && /:8000$/.test(location.origin)) {
+  const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
+  if (isHttpPage && location.hostname && !["localhost", "127.0.0.1"].includes(location.hostname)) {
+    return `${location.origin}/api/v1`;
+  }
+  if (isHttpPage && /:8000$/.test(location.origin)) {
     return `${location.origin}/api/v1`;
   }
   return "http://127.0.0.1:8000/api/v1";
@@ -14,6 +19,8 @@ const state = {
   customNodeDraft: null,
   products: [],
   selectedProductId: "",
+  sourceMode: "system_product",
+  systemProductAssets: [],
   systemAssets: {
     logo: [],
     qrcode: [],
@@ -25,8 +32,12 @@ const state = {
     bottom_bar: null,
   },
   productAssets: [],
+  sceneAsset: null,
   activeTask: null,
   poster: null,
+  copyDirty: false,
+  copyRevision: 0,
+  rerendering: false,
   compliance: {
     status: "unknown",
     issues: [],
@@ -41,6 +52,7 @@ const state = {
 
 const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
+  resetApiBaseBtn: document.querySelector("#resetApiBaseBtn"),
   stepper: document.querySelector("#stepper"),
   screens: [...document.querySelectorAll(".screen")],
   nodeGrid: document.querySelector("#nodeGrid"),
@@ -51,6 +63,13 @@ const els = {
   customNodeDate: document.querySelector("#customNodeDate"),
   useCustomNodeBtn: document.querySelector("#useCustomNodeBtn"),
   dropZone: document.querySelector("#dropZone"),
+  assetProductSelect: document.querySelector("#assetProductSelect"),
+  sourceModeInputs: [...document.querySelectorAll('input[name="sourceMode"]')],
+  systemProductSection: document.querySelector("#systemProductSection"),
+  reloadProductAssetsBtn: document.querySelector("#reloadProductAssetsBtn"),
+  systemProductAssetsGrid: document.querySelector("#systemProductAssetsGrid"),
+  uploadZoneTitle: document.querySelector("#uploadZoneTitle"),
+  uploadZoneHint: document.querySelector("#uploadZoneHint"),
   productFileInput: document.querySelector("#productFileInput"),
   pickProductFilesBtn: document.querySelector("#pickProductFilesBtn"),
   productAssetGrid: document.querySelector("#productAssetGrid"),
@@ -67,6 +86,9 @@ const els = {
   copyDirectionSelect: document.querySelector("#copyDirectionSelect"),
   styleSelect: document.querySelector("#styleSelect"),
   templateInput: document.querySelector("#templateInput"),
+  copyModeInputs: [...document.querySelectorAll('input[name="copyMode"]')],
+  titlePreferenceLabel: document.querySelector("#titlePreferenceLabel"),
+  subtitlePreferenceLabel: document.querySelector("#subtitlePreferenceLabel"),
   titlePreferenceInput: document.querySelector("#titlePreferenceInput"),
   subtitlePreferenceInput: document.querySelector("#subtitlePreferenceInput"),
   customRequirementInput: document.querySelector("#customRequirementInput"),
@@ -81,6 +103,7 @@ const els = {
   resultTaskStatus: document.querySelector("#resultTaskStatus"),
   resultCopy: document.querySelector("#resultCopy"),
   resultPosterUrl: document.querySelector("#resultPosterUrl"),
+  resultFusion: document.querySelector("#resultFusion"),
   resultError: document.querySelector("#resultError"),
   previewTitleInput: document.querySelector("#previewTitleInput"),
   previewSubtitleInput: document.querySelector("#previewSubtitleInput"),
@@ -245,7 +268,7 @@ function renderSummary() {
     ? `${state.selectedNode.name}${state.selectedNode.type ? ` · ${typeLabel(state.selectedNode.type)}` : ""}`
     : "未选择";
   els.summaryProduct.textContent = selectedProduct ? `${selectedProduct.name}${selectedProduct.model ? ` · ${selectedProduct.model}` : ""}` : "未选择";
-  els.summaryProductAssets.textContent = `${state.productAssets.length} / 1`;
+  els.summaryProductAssets.textContent = sourceSelectionSummary();
 
   const pieces = [];
   pieces.push(state.selectedAssets.logo ? "Logo已选" : "Logo未选");
@@ -288,7 +311,7 @@ function statusLabel(status) {
 
 function canGoConfig() {
   return (
-    state.productAssets.length === 1 &&
+    hasRequiredSourceAsset() &&
     Boolean(state.selectedAssets.logo) &&
     Boolean(state.selectedAssets.qrcode) &&
     Boolean(state.selectedAssets.bottom_bar)
@@ -296,7 +319,9 @@ function canGoConfig() {
 }
 
 function canCreateTask() {
+  const taskRunning = ["pending", "processing"].includes(state.activeTask?.status);
   return (
+    !taskRunning &&
     Boolean(state.selectedNode) &&
     !state.selectedNode?.isCustom &&
     Boolean(state.selectedProductId) &&
@@ -305,7 +330,24 @@ function canCreateTask() {
 }
 
 function canDownload() {
-  return Boolean(state.poster?.jpg_url) && state.compliance.status === "passed";
+  return Boolean(state.poster?.jpg_url) && state.compliance.status === "passed" && !state.copyDirty && !state.rerendering;
+}
+
+function hasRequiredSourceAsset() {
+  if (state.sourceMode === "scene_image") {
+    return Boolean(state.sceneAsset);
+  }
+  return state.productAssets.length >= 1 && state.productAssets.length <= 5;
+}
+
+function sourceSelectionSummary() {
+  if (state.sourceMode === "scene_image") {
+    return state.sceneAsset ? "场景图已选" : "场景图未选";
+  }
+  if (state.sourceMode === "system_product") {
+    return state.productAssets.length ? `系统产品图 ${state.productAssets.length} 张` : "系统产品图未选";
+  }
+  return state.productAssets.length ? `上传产品图 ${state.productAssets.length} 张` : "上传产品图未选";
 }
 
 async function loadNodes() {
@@ -500,19 +542,19 @@ async function uploadProductFiles(fileList) {
   if (!files.length) return;
 
   const file = files[0];
+  const uploadMode = state.sourceMode === "scene_image" ? "scene_image" : "upload_product";
+  const assetType = uploadMode === "scene_image" ? "scene_image" : "product_image";
+  if (state.sourceMode === "system_product") {
+    setSourceMode("upload_product");
+  }
   if (files.length > 1) {
-    showMessage(els.uploadMessage, "MVP 当前仅使用 1 张透明产品 PNG，已取第一张。", "warning");
+    showMessage(els.uploadMessage, `MVP 当前仅使用 1 张${assetLabel(assetType)}，已取第一张。`, "warning");
   } else {
-    showMessage(els.uploadMessage, "正在上传透明产品 PNG...");
+    showMessage(els.uploadMessage, `正在上传${assetLabel(assetType)}...`);
   }
 
   if (!file.type.startsWith("image/")) {
     showMessage(els.uploadMessage, `${file.name} 不是支持的图片类型。`, "warning");
-    return;
-  }
-  const isPng = file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
-  if (!isPng) {
-    showMessage(els.uploadMessage, `${file.name} 不是透明 PNG，请上传已经抠好的透明产品 PNG。`, "warning");
     return;
   }
   if (file.size > 10 * 1024 * 1024) {
@@ -521,12 +563,18 @@ async function uploadProductFiles(fileList) {
   }
 
   try {
-    const asset = await uploadAsset(file, "product_image");
-    requiredFields("upload product asset", asset, ["id", "asset_type", "public_url"]);
-    state.productAssets = [asset];
+    const asset = await uploadAsset(file, assetType, { product_id: state.selectedProductId });
+    requiredFields(`upload ${assetType} asset`, asset, ["id", "asset_type", "public_url"]);
+    if (assetType === "scene_image") {
+      state.sceneAsset = asset;
+      state.productAssets = [];
+    } else {
+      state.productAssets = [asset];
+      state.sceneAsset = null;
+    }
     renderProductAssets();
     renderSummary();
-    showMessage(els.uploadMessage, "透明产品 PNG 上传完成。", "success");
+    showMessage(els.uploadMessage, `${assetLabel(assetType)}上传完成。`, "success");
   } catch (error) {
     showMessage(els.uploadMessage, `${error.code}: ${error.message}`, "error");
   }
@@ -551,12 +599,15 @@ async function uploadSystemAsset(file, assetType) {
   }
 }
 
-async function uploadAsset(file, assetType) {
+async function uploadAsset(file, assetType, extra = {}) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("asset_type", assetType);
   formData.append("name", file.name);
   formData.append("tags", JSON.stringify(["frontend_mvp"]));
+  if (extra.product_id) {
+    formData.append("product_id", extra.product_id);
+  }
   return request("/assets", {
     method: "POST",
     body: formData,
@@ -568,33 +619,42 @@ function assetLabel(assetType) {
     logo: "Logo",
     qrcode: "二维码",
     bottom_bar: "底部宣传条",
-    scene_image: "场景参考图",
-    product_image: "透明产品 PNG",
+    scene_image: "整张场景图",
+    product_image: "产品图",
   };
   return map[assetType] || assetType;
 }
 
 function renderProductAssets() {
   els.productAssetGrid.innerHTML = "";
-  state.productAssets.forEach((asset, index) => {
+  const assets = state.sourceMode === "scene_image" ? (state.sceneAsset ? [state.sceneAsset] : []) : state.productAssets;
+  if (!assets.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = state.sourceMode === "scene_image" ? "还没有选择整张场景图。" : "还没有选择产品图。";
+    els.productAssetGrid.append(empty);
+    renderPreviewSelects();
+    return;
+  }
+  assets.forEach((asset, index) => {
     const card = document.createElement("article");
     card.className = `product-card ${index === 0 ? "recommended" : ""}`;
     const img = document.createElement("img");
     img.src = resolveReturnedUrl(asset.public_url);
-    img.alt = asset.name || asset.file_name || `融合场景图${index + 1}`;
+    img.alt = asset.name || asset.file_name || `${assetLabel(asset.asset_type)} ${index + 1}`;
     img.loading = "lazy";
     img.onerror = () => {
-      img.alt = "融合场景图不可访问";
+      img.alt = `${assetLabel(asset.asset_type)}不可访问`;
     };
     const body = document.createElement("div");
     body.className = "product-card-body";
     const title = document.createElement("strong");
-    title.textContent = index === 0 ? `${asset.name || asset.file_name || asset.id} · 当前透明产品 PNG` : asset.name || asset.file_name || asset.id;
+    title.textContent = `${asset.name || asset.file_name || asset.id} · 当前${assetLabel(asset.asset_type)}`;
     const meta = document.createElement("span");
     if (asset.width && asset.height) {
-      meta.textContent = `产品图尺寸：${asset.width}x${asset.height}`;
+      meta.textContent = `${assetLabel(asset.asset_type)}尺寸：${asset.width}x${asset.height}`;
     } else {
-      meta.textContent = "等待后端返回产品图尺寸";
+      meta.textContent = `等待后端返回${assetLabel(asset.asset_type)}尺寸`;
     }
     const actions = document.createElement("div");
     actions.className = "product-card-actions";
@@ -603,7 +663,11 @@ function renderProductAssets() {
     removeButton.className = "ghost-button small";
     removeButton.textContent = "移出本次任务";
     removeButton.addEventListener("click", () => {
-      state.productAssets.splice(index, 1);
+      if (state.sourceMode === "scene_image") {
+        state.sceneAsset = null;
+      } else {
+        state.productAssets.splice(index, 1);
+      }
       renderProductAssets();
       renderSummary();
     });
@@ -634,32 +698,186 @@ async function loadProducts() {
   } finally {
     els.reloadProductsBtn.disabled = false;
     renderProducts();
+    await loadSystemProductAssets();
     renderSummary();
   }
 }
 
 function renderProducts() {
-  els.productSelect.innerHTML = "";
+  renderProductSelect(els.productSelect);
+  renderProductSelect(els.assetProductSelect);
+  syncProductSelects();
+}
+
+function renderProductSelect(select) {
+  select.innerHTML = "";
   if (!state.products.length) {
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "后端暂无产品";
-    els.productSelect.append(option);
+    select.append(option);
     state.selectedProductId = "";
     return;
+  }
+  if (!state.products.some((product) => product.id === state.selectedProductId)) {
+    state.selectedProductId = state.products[0].id;
   }
   state.products.forEach((product) => {
     const option = document.createElement("option");
     option.value = product.id;
     option.textContent = `${product.name}${product.model ? `（${product.model}）` : ""}`;
-    els.productSelect.append(option);
+    select.append(option);
   });
-  els.productSelect.value = state.selectedProductId || state.products[0].id;
-  state.selectedProductId = els.productSelect.value;
+  select.value = state.selectedProductId || state.products[0].id;
+  state.selectedProductId = select.value;
+}
+
+function syncProductSelects() {
+  if (els.productSelect.value !== state.selectedProductId) {
+    els.productSelect.value = state.selectedProductId;
+  }
+  if (els.assetProductSelect.value !== state.selectedProductId) {
+    els.assetProductSelect.value = state.selectedProductId;
+  }
+}
+
+async function loadSystemProductAssets() {
+  if (!state.selectedProductId) {
+    state.systemProductAssets = [];
+    renderSystemProductAssets();
+    return;
+  }
+  els.reloadProductAssetsBtn.disabled = true;
+  const query = new URLSearchParams({
+    asset_type: "product_image",
+    source: "product_material",
+    product_id: state.selectedProductId,
+  });
+  try {
+    const data = await request(`/assets?${query.toString()}`);
+    if (!Array.isArray(data?.items)) {
+      addProtocolIssue("GET /assets?asset_type=product_image&source=product_material&product_id=... 缺少 data.items 数组。");
+      state.systemProductAssets = [];
+    } else {
+      state.systemProductAssets = data.items;
+      state.systemProductAssets.forEach((asset) => requiredFields("system product asset", asset, ["id", "asset_type", "public_url"]));
+      if (state.sourceMode === "system_product" && !state.productAssets.length && state.systemProductAssets[0]) {
+        selectSystemProductAsset(state.systemProductAssets[0], { silent: true });
+      }
+    }
+  } catch (error) {
+    state.systemProductAssets = [];
+    showMessage(els.uploadMessage, `${error.code}: ${error.message}`, "error");
+  } finally {
+    els.reloadProductAssetsBtn.disabled = false;
+    renderSystemProductAssets();
+    renderProductAssets();
+    renderSummary();
+  }
+}
+
+function renderSystemProductAssets() {
+  els.systemProductAssetsGrid.innerHTML = "";
+  if (!state.systemProductAssets.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "该产品暂未索引到可用产品图，可切换为上传产品图或上传整张场景图。";
+    els.systemProductAssetsGrid.append(empty);
+    return;
+  }
+
+  state.systemProductAssets.forEach((asset, index) => {
+    const card = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
+    card.classList.toggle("selected", state.productAssets.some((item) => item.id === asset.id));
+    const thumb = card.querySelector(".choice-thumb");
+    const img = document.createElement("img");
+    img.src = resolveReturnedUrl(asset.public_url);
+    img.alt = asset.name || asset.file_name || `系统产品图 ${index + 1}`;
+    img.loading = "lazy";
+    img.onerror = () => {
+      thumb.textContent = "图片不可访问";
+    };
+    thumb.innerHTML = "";
+    thumb.append(img);
+    card.querySelector("strong").textContent = asset.name || asset.file_name || asset.id;
+    card.querySelector("small").textContent = asset.width && asset.height ? `${asset.width}x${asset.height}` : "系统素材库";
+    card.addEventListener("click", () => selectSystemProductAsset(asset));
+    els.systemProductAssetsGrid.append(card);
+  });
+}
+
+function selectSystemProductAsset(asset, options = {}) {
+  state.sourceMode = "system_product";
+  state.productAssets = [asset];
+  state.sceneAsset = null;
+  if (!options.silent) {
+    showMessage(els.uploadMessage, "已选择系统产品图。", "success");
+  }
+  renderSourceMode();
+  renderSystemProductAssets();
+  renderProductAssets();
+  renderSummary();
+}
+
+function setSourceMode(mode) {
+  const previousMode = state.sourceMode;
+  state.sourceMode = mode;
+  if (mode === "scene_image") {
+    state.productAssets = [];
+  } else if (mode === "upload_product") {
+    state.sceneAsset = null;
+    if (previousMode !== "upload_product") {
+      state.productAssets = [];
+    }
+  } else if (mode === "system_product") {
+    state.sceneAsset = null;
+    const selectedFromSystemLibrary = state.productAssets.some((asset) =>
+      state.systemProductAssets.some((systemAsset) => systemAsset.id === asset.id),
+    );
+    if (!selectedFromSystemLibrary) {
+      state.productAssets = state.systemProductAssets[0] ? [state.systemProductAssets[0]] : [];
+    }
+  }
+  renderSourceMode();
+  renderSystemProductAssets();
+  renderProductAssets();
+  renderSummary();
+}
+
+function renderSourceMode() {
+  els.sourceModeInputs.forEach((input) => {
+    input.checked = input.value === state.sourceMode;
+  });
+  els.systemProductSection.hidden = state.sourceMode !== "system_product";
+  const isScene = state.sourceMode === "scene_image";
+  const isSystem = state.sourceMode === "system_product";
+  els.dropZone.classList.toggle("muted", isSystem);
+  els.uploadZoneTitle.textContent = isScene ? "拖拽或选择整张场景图" : "拖拽或选择产品图";
+  els.uploadZoneHint.textContent = isScene
+    ? "用于已经完成构图的整张场景图，单张限制 10MB，支持 JPG、PNG、WEBP。"
+    : isSystem
+      ? "当前优先使用素材库产品图；也可以直接上传产品图切换到上传模式。"
+      : "产品图可以是透明 PNG，也可以是清爽 JPG/WEBP，单张限制 10MB。";
+}
+
+function currentCopyMode() {
+  return els.copyModeInputs.find((input) => input.checked)?.value || "ai";
+}
+
+function renderCopyMode() {
+  const isManual = currentCopyMode() === "manual";
+  els.titlePreferenceLabel.textContent = isManual ? "主标题（必填）" : "主标题偏好";
+  els.subtitlePreferenceLabel.textContent = isManual ? "副标题（必填）" : "副标题偏好";
+  els.titlePreferenceInput.placeholder = isManual ? "必填，不超过18字" : "可留空，不超过18字";
+  els.subtitlePreferenceInput.placeholder = isManual ? "必填，不超过42字" : "可留空，不超过42字";
+  els.titlePreferenceInput.required = isManual;
+  els.subtitlePreferenceInput.required = isManual;
 }
 
 function buildCustomRequirement() {
+  const copyModeLabel = currentCopyMode() === "manual" ? "手动填写文案" : "AI生成文案";
   const pieces = [
+    `文案模式：${copyModeLabel}`,
     `文案方向：${els.copyDirectionSelect.value}`,
     `风格偏好：${els.styleSelect.value}`,
   ];
@@ -674,16 +892,27 @@ function buildCustomRequirement() {
 
 async function createPosterTask() {
   if (!canCreateTask()) {
-    showMessage(els.taskMessage, "请先完成节点、产品、透明产品 PNG、Logo、二维码和底部条选择。", "warning");
+    showMessage(els.taskMessage, "请先完成节点、产品、产品图或场景图、Logo、二维码和底部条选择。", "warning");
     return;
   }
+  const copyMode = currentCopyMode();
+  const titlePreference = els.titlePreferenceInput.value.trim();
+  const subtitlePreference = els.subtitlePreferenceInput.value.trim();
+  if (copyMode === "manual" && (!titlePreference || !subtitlePreference)) {
+    showMessage(els.taskMessage, "手动填写文案时，主标题和副标题都不能为空。", "warning");
+    (!titlePreference ? els.titlePreferenceInput : els.subtitlePreferenceInput).focus();
+    return;
+  }
+  const assetPayload =
+    state.sourceMode === "scene_image"
+      ? { scene_asset_id: state.sceneAsset.id, product_asset_ids: [] }
+      : { scene_asset_id: null, product_asset_ids: state.productAssets.map((asset) => asset.id) };
 
   const payload = {
     node_id: state.selectedNode.id,
     product_id: state.selectedProductId,
     template_id: els.templateInput.value.trim() || "template_v1_vertical_standard",
-    scene_asset_id: null,
-    product_asset_ids: state.productAssets.map((asset) => asset.id),
+    ...assetPayload,
     logo_asset_id: state.selectedAssets.logo.id,
     qrcode_asset_id: state.selectedAssets.qrcode.id,
     bottom_bar_asset_id: state.selectedAssets.bottom_bar.id,
@@ -691,8 +920,9 @@ async function createPosterTask() {
     scene_prompt: els.customRequirementInput.value.trim(),
     custom_requirement: buildCustomRequirement(),
     copy_preference: {
-      title: els.titlePreferenceInput.value.trim(),
-      subtitle: els.subtitlePreferenceInput.value.trim(),
+      mode: copyMode,
+      title: titlePreference,
+      subtitle: subtitlePreference,
     },
   };
 
@@ -711,6 +941,8 @@ async function createPosterTask() {
     }
     state.activeTask = data;
     state.poster = null;
+    state.copyDirty = false;
+    state.rerendering = false;
     state.compliance = { status: "unknown", issues: [], risk_level: "", suggested_title: "", suggested_subtitle: "" };
     renderSummary();
     showMessage(els.taskMessage, `任务已创建：${data.task_id}`, "success");
@@ -794,6 +1026,8 @@ function handleTaskUpdate(data, startedAt) {
   if (data.status === "success") {
     stopPolling();
     state.poster = data.poster;
+    state.copyDirty = false;
+    state.rerendering = false;
     if (!state.poster) {
       addProtocolIssue("任务成功响应缺少 poster 对象。");
     } else {
@@ -825,22 +1059,22 @@ function handleTaskUpdate(data, startedAt) {
     showMessage(els.taskMessage, data.error?.message || "海报生成失败，请查看后端错误信息。", "error");
     if (data.error?.code === "COMPLIANCE_BLOCKED") {
       applyComplianceBlocked(data.error);
-      setScreen("preview");
-      renderPoster();
     }
+    setScreen("preview");
+    renderPoster();
     els.createTaskBtn.disabled = false;
     renderSummary();
     return;
   }
 
-  if (Date.now() - startedAt > 90000) {
-    showMessage(els.taskMessage, "生成已超过90秒，任务仍在轮询中，可继续等待。", "warning");
+  if (Date.now() - startedAt > AI_IMAGE_WARNING_MS) {
+    showMessage(els.taskMessage, "生成已超过120秒，任务仍在轮询中，可继续等待。", "warning");
   }
   scheduleNextPoll(data.task_id, startedAt);
 }
 
 function renderTaskError(error) {
-  const details = error.details ? ` ${JSON.stringify(error.details)}` : "";
+  const details = formatTaskErrorDetails(error.details);
   showMessage(els.taskMessage, `${error.code || "TASK_ERROR"}: ${error.message || "任务异常"}${details}`, "error");
 }
 
@@ -876,6 +1110,7 @@ function seedPreviewCopyFromBackend(taskData) {
   const copy = extractBackendCopy(taskData);
   els.previewTitleInput.value = copy.title || "";
   els.previewSubtitleInput.value = copy.subtitle || "";
+  state.copyDirty = false;
   if (!copy.title && !copy.subtitle) {
     addProtocolIssue("任务成功响应未返回显式文案字段 copy/generated_copy/poster.copy，前端不使用海报文件名代替文案。");
   }
@@ -896,15 +1131,50 @@ function renderBackendResult() {
     : "未创建";
 
   const copy = extractBackendCopy();
-  els.resultCopy.textContent = copy.title || copy.subtitle ? `主标题：${copy.title || "未返回"}；副标题：${copy.subtitle || "未返回"}` : "后端未返回显式文案字段";
+  els.resultCopy.textContent = copy.title || copy.subtitle
+    ? `主标题：${copy.title || "未返回"}；副标题：${copy.subtitle || "未返回"}`
+    : ["pending", "processing"].includes(state.activeTask?.status)
+      ? "AI 文案生成中"
+      : "后端未返回显式文案字段";
   els.resultPosterUrl.textContent = state.poster?.jpg_url || state.activeTask?.poster?.jpg_url || "等待后端返回";
+  els.resultFusion.textContent = formatFusionResult(state.activeTask?.fusion);
 
   const taskError = state.activeTask?.error;
   if (!taskError) {
     els.resultError.textContent = "无";
   } else {
-    els.resultError.textContent = `${taskError.code || "TASK_ERROR"}: ${taskError.message || "任务异常"}`;
+    els.resultError.textContent = `${taskError.code || "TASK_ERROR"}: ${taskError.message || "任务异常"}${formatTaskErrorDetails(taskError.details)}`;
   }
+}
+
+function formatFusionResult(fusion) {
+  if (!fusion) {
+    if (state.activeTask?.status === "failed" && state.activeTask?.error?.code === "AI_IMAGE_FUSION_FAILED") {
+      return "图片模型未成功调用，未生成本地堆叠图";
+    }
+    return ["pending", "processing"].includes(state.activeTask?.status) ? "AI 图片融合中" : "等待后端返回";
+  }
+
+  const fallback = fusion.fallback || {};
+  const pieces = [
+    `provider=${fusion.provider || "unknown"}`,
+    `mode=${fusion.mode || "unknown"}`,
+    `model=${fusion.model || "unknown"}`,
+    `fallback.used=${fallback.used ? "true" : "false"}`,
+  ];
+  if (fallback.reason) {
+    pieces.push(`fallback.reason=${fallback.reason}`);
+  }
+  return pieces.join("；");
+}
+
+function formatTaskErrorDetails(details) {
+  if (!details) return "";
+  const pieces = [];
+  if (details.reason) pieces.push(`reason=${details.reason}`);
+  if (details.fusion_policy) pieces.push(`policy=${details.fusion_policy}`);
+  if (details.local_fallback_used !== undefined) pieces.push(`local_fallback_used=${details.local_fallback_used}`);
+  return pieces.length ? `（${pieces.join("；")}）` : "";
 }
 
 async function runComplianceCheck() {
@@ -913,6 +1183,7 @@ async function runComplianceCheck() {
     return;
   }
 
+  const revision = state.copyRevision;
   const payload = {
     title: els.previewTitleInput.value.trim(),
     subtitle: els.previewSubtitleInput.value.trim(),
@@ -929,6 +1200,7 @@ async function runComplianceCheck() {
       method: "POST",
       body: payload,
     });
+    if (revision !== state.copyRevision) return;
     requiredFields("compliance check", data, ["status", "risk_level", "issues", "suggested_title", "suggested_subtitle"]);
     state.compliance = {
       status: data.status || "unknown",
@@ -937,7 +1209,11 @@ async function runComplianceCheck() {
       suggested_title: data.suggested_title || "",
       suggested_subtitle: data.suggested_subtitle || "",
     };
+    if (state.compliance.status === "passed" && state.copyDirty && state.poster?.jpg_url) {
+      await rerenderPosterWithPreviewCopy(payload, revision);
+    }
   } catch (error) {
+    if (revision !== state.copyRevision) return;
     if (error.code === "COMPLIANCE_BLOCKED") {
       applyComplianceBlocked(error);
     } else {
@@ -950,10 +1226,68 @@ async function runComplianceCheck() {
       };
     }
   } finally {
+    if (revision !== state.copyRevision) return;
     els.runComplianceBtn.disabled = false;
     renderCompliance();
     renderSummary();
   }
+}
+
+async function rerenderPosterWithPreviewCopy(payload, revision) {
+  if (!state.activeTask?.task_id || !state.poster?.jpg_url) return;
+
+  state.rerendering = true;
+  renderCompliance();
+  renderSummary();
+
+  try {
+    const data = await request(`/poster-tasks/${encodeURIComponent(state.activeTask.task_id)}/rerender`, {
+      method: "POST",
+      body: {
+        title: payload.title,
+        subtitle: payload.subtitle,
+      },
+    });
+    if (revision !== state.copyRevision) return;
+    requiredFields("rerender poster task", data, ["task_id", "status", "poster", "copy"]);
+    state.activeTask = data;
+    if (data.poster) {
+      requiredFields("rerender poster", data.poster, ["id", "jpg_url", "width", "height"]);
+      state.poster = data.poster;
+    }
+    const copy = extractBackendCopy(data);
+    els.previewTitleInput.value = copy.title || payload.title;
+    els.previewSubtitleInput.value = copy.subtitle || payload.subtitle;
+    state.compliance = complianceStateFromBackend(data.compliance || state.compliance);
+    state.copyDirty = false;
+    renderPoster();
+  } catch (error) {
+    if (revision !== state.copyRevision) return;
+    state.compliance = {
+      status: "failed",
+      issues: [`重新合成 JPG 失败：${error.code || "RERENDER_FAILED"} ${error.message}`],
+      risk_level: "unknown",
+      suggested_title: "",
+      suggested_subtitle: "",
+    };
+  } finally {
+    if (revision === state.copyRevision) {
+      state.rerendering = false;
+      renderCompliance();
+      renderBackendResult();
+      renderSummary();
+    }
+  }
+}
+
+function complianceStateFromBackend(data) {
+  return {
+    status: data?.status || "unknown",
+    risk_level: data?.risk_level || "",
+    issues: normalizeIssues(data?.issues || []),
+    suggested_title: data?.suggested_title || "",
+    suggested_subtitle: data?.suggested_subtitle || "",
+  };
 }
 
 function normalizeIssues(issues) {
@@ -976,8 +1310,18 @@ function renderCompliance() {
   els.complianceCard.className = "compliance-card";
   const status = state.compliance.status;
 
+  if (state.rerendering) {
+    els.complianceCard.innerHTML = "<strong>正在更新海报</strong><p>文案已通过检查，正在重新合成 JPG，完成前下载保持禁用。</p>";
+    return;
+  }
+
   if (status === "checking") {
     els.complianceCard.innerHTML = "<strong>正在检查</strong><p>正在调用合规检查接口。</p>";
+    return;
+  }
+
+  if (state.copyDirty && state.poster?.jpg_url && status === "unknown") {
+    els.complianceCard.innerHTML = "<strong>文案已修改</strong><p>正在等待合规检查和 JPG 重渲染，完成前下载保持禁用。</p>";
     return;
   }
 
@@ -1010,7 +1354,8 @@ function renderCompliance() {
 }
 
 function renderPreviewSelects() {
-  renderSelectFromAssets(els.previewProductAssetSelect, state.productAssets, "融合场景图");
+  const sourceAssets = state.sourceMode === "scene_image" ? (state.sceneAsset ? [state.sceneAsset] : []) : state.productAssets;
+  renderSelectFromAssets(els.previewProductAssetSelect, sourceAssets, state.sourceMode === "scene_image" ? "整张场景图" : "产品图");
   renderSelectFromAssets(els.previewQrcodeSelect, state.systemAssets.qrcode, "二维码", state.selectedAssets.qrcode?.id);
   renderSelectFromAssets(els.previewBottomBarSelect, state.systemAssets.bottom_bar, "底部条", state.selectedAssets.bottom_bar?.id);
 }
@@ -1039,20 +1384,46 @@ function scheduleComplianceCheck() {
   state.complianceTimer = window.setTimeout(runComplianceCheck, 500);
 }
 
-function downloadPoster() {
+function markPreviewCopyDirty() {
+  if (!state.poster?.jpg_url) return;
+  state.copyDirty = true;
+  state.copyRevision += 1;
+  state.compliance = { status: "unknown", issues: [], risk_level: "", suggested_title: "", suggested_subtitle: "" };
+  renderCompliance();
+  renderSummary();
+  scheduleComplianceCheck();
+}
+
+async function downloadPoster() {
   if (!canDownload()) return;
-  const link = document.createElement("a");
-  link.href = resolveReturnedUrl(state.poster.jpg_url);
-  link.download = `${state.poster.title || state.poster.id || "poster"}.jpg`;
-  document.body.append(link);
-  link.click();
-  link.remove();
+  els.downloadBtn.disabled = true;
+  try {
+    const response = await fetch(resolveReturnedUrl(state.poster.jpg_url));
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `${state.poster.title || state.poster.id || "poster"}.jpg`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    showMessage(els.taskMessage, `下载失败：${error.message}`, "error");
+  } finally {
+    renderSummary();
+  }
 }
 
 function newTask() {
   stopPolling();
   state.activeTask = null;
   state.poster = null;
+  state.copyDirty = false;
+  state.rerendering = false;
   state.compliance = { status: "unknown", issues: [], risk_level: "", suggested_title: "", suggested_subtitle: "" };
   els.taskMessage.hidden = true;
   els.pollingPanel.hidden = true;
@@ -1091,10 +1462,21 @@ function bindEvents() {
     loadSystemAssets();
     loadProducts();
   });
+  els.resetApiBaseBtn.addEventListener("click", () => {
+    localStorage.removeItem("festivalPoster.apiBase");
+    state.apiBase = API_BASE_FALLBACK;
+    els.apiBaseInput.value = state.apiBase;
+    state.protocolIssues = [];
+    renderProtocolIssues();
+    loadNodes();
+    loadSystemAssets();
+    loadProducts();
+  });
 
   els.reloadNodesBtn.addEventListener("click", loadNodes);
   els.reloadAssetsBtn.addEventListener("click", loadSystemAssets);
   els.reloadProductsBtn.addEventListener("click", loadProducts);
+  els.reloadProductAssetsBtn.addEventListener("click", loadSystemProductAssets);
   els.useCustomNodeBtn.addEventListener("click", useCustomNode);
 
   els.goAssetsBtn.addEventListener("click", () => setScreen("assets"));
@@ -1120,7 +1502,12 @@ function bindEvents() {
   document.querySelectorAll("[data-back]").forEach((button) => {
     button.addEventListener("click", () => setScreen(button.dataset.back));
   });
-  document.querySelector("[data-open-history]").addEventListener("click", () => setScreen("history"));
+  const historyButton = document.querySelector("[data-open-history]");
+  historyButton?.addEventListener("click", () => {
+    if (!historyButton.disabled) {
+      setScreen("history");
+    }
+  });
 
   els.pickProductFilesBtn.addEventListener("click", () => els.productFileInput.click());
   els.productFileInput.addEventListener("change", () => uploadProductFiles(els.productFileInput.files));
@@ -1144,14 +1531,38 @@ function bindEvents() {
     input.addEventListener("change", () => uploadSystemAsset(input.files[0], input.dataset.uploadInput));
   });
 
+  els.sourceModeInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) {
+        setSourceMode(input.value);
+      }
+    });
+  });
+  els.copyModeInputs.forEach((input) => {
+    input.addEventListener("change", renderCopyMode);
+  });
+  els.assetProductSelect.addEventListener("change", () => {
+    state.selectedProductId = els.assetProductSelect.value;
+    syncProductSelects();
+    state.productAssets = [];
+    state.sceneAsset = null;
+    loadSystemProductAssets();
+    renderProductAssets();
+    renderSummary();
+  });
   els.productSelect.addEventListener("change", () => {
     state.selectedProductId = els.productSelect.value;
+    syncProductSelects();
+    state.productAssets = [];
+    state.sceneAsset = null;
+    loadSystemProductAssets();
+    renderProductAssets();
     renderSummary();
   });
   els.createTaskBtn.addEventListener("click", createPosterTask);
   els.runComplianceBtn.addEventListener("click", runComplianceCheck);
-  els.previewTitleInput.addEventListener("input", scheduleComplianceCheck);
-  els.previewSubtitleInput.addEventListener("input", scheduleComplianceCheck);
+  els.previewTitleInput.addEventListener("input", markPreviewCopyDirty);
+  els.previewSubtitleInput.addEventListener("input", markPreviewCopyDirty);
   els.downloadBtn.addEventListener("click", downloadPoster);
   els.newTaskBtn.addEventListener("click", newTask);
 
@@ -1164,6 +1575,9 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  renderSourceMode();
+  renderCopyMode();
+  renderProductAssets();
   renderSummary();
   renderCompliance();
   await Promise.all([loadNodes(), loadSystemAssets(), loadProducts()]);

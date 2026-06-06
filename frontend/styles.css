@@ -33,6 +33,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   min-width: 320px;
   background: var(--bg);
@@ -531,6 +535,11 @@ textarea:focus {
   background: var(--accent-soft);
 }
 
+.upload-zone.muted {
+  border-style: solid;
+  background: #f7fbfc;
+}
+
 .upload-zone strong {
   display: block;
   margin-bottom: 6px;
@@ -589,6 +598,47 @@ textarea:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin: 18px 0;
+}
+
+.source-mode-group,
+.copy-mode-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 18px;
+}
+
+.copy-mode-group {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.source-mode-group label,
+.copy-mode-group label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: #ffffff;
+  color: var(--muted-strong);
+  font-weight: 800;
+}
+
+.source-mode-group input,
+.copy-mode-group input {
+  width: 18px;
+  min-height: 18px;
+  accent-color: var(--accent);
+}
+
+.product-library-grid {
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+}
+
+.product-library-grid .choice-card {
+  min-height: 170px;
 }
 
 .asset-section {
@@ -1685,6 +1735,7 @@ input[readonly] {
   .form-grid.two,
   .asset-preview-grid,
   .asset-sections,
+  .copy-mode-group,
   .choice-grid {
     grid-template-columns: 1fr;
   }
