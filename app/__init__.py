@@ -1,0 +1,1 @@
+"""Festival poster backend package."""

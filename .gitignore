@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+output/
+storage/tmp/
+storage/uploads/
+storage/generated/
+storage/system/
+storage/*.log
+storage/*.pid
+tmp_uvicorn_*.log

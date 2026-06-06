@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>朴道节日海报AI员工</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">P</span>
+          <div>
+            <p class="eyebrow">朴道品牌物料工作台</p>
+            <h1>节日海报生成</h1>
+            <p class="top-subtitle">选节点、传素材、生成海报、合规下载，一条链路完成。</p>
+          </div>
+        </div>
+        <nav class="top-actions" aria-label="主要入口">
+          <button class="ghost-button" type="button" data-open-history>最近生成</button>
+          <label class="api-field">
+            <span>API地址</span>
+            <input id="apiBaseInput" type="url" inputmode="url" />
+          </label>
+        </nav>
+      </header>
+
+      <main>
+        <section class="command-strip" aria-label="MVP能力概览">
+          <article>
+            <span>默认画幅</span>
+            <strong>1080 × 1920</strong>
+          </article>
+          <article>
+            <span>上传融合场景图</span>
+            <strong>1 张</strong>
+          </article>
+          <article>
+            <span>生成链路</span>
+            <strong>后端任务轮询</strong>
+          </article>
+          <article>
+            <span>下载规则</span>
+            <strong>合规通过后可下载</strong>
+          </article>
+        </section>
+
+        <section class="workflow-card" aria-label="生成流程">
+          <ol class="stepper" id="stepper">
+            <li class="active" data-step-indicator="nodes">
+              <span>1</span>
+              <strong>选择节点</strong>
+            </li>
+            <li data-step-indicator="assets">
+              <span>2</span>
+              <strong>上传素材</strong>
+            </li>
+            <li data-step-indicator="config">
+              <span>3</span>
+              <strong>生成配置</strong>
+            </li>
+            <li data-step-indicator="preview">
+              <span>4</span>
+              <strong>预览下载</strong>
+            </li>
+          </ol>
+        </section>
+
+        <section class="page-grid">
+          <aside class="side-panel" aria-label="当前选择">
+            <h2>当前任务</h2>
+            <dl class="summary-list">
+              <div>
+                <dt>营销节点</dt>
+                <dd id="summaryNode">未选择</dd>
+              </div>
+              <div>
+                <dt>产品</dt>
+                <dd id="summaryProduct">未选择</dd>
+              </div>
+              <div>
+                <dt>融合场景图</dt>
+                <dd id="summaryProductAssets">0 / 1</dd>
+              </div>
+              <div>
+                <dt>系统素材</dt>
+                <dd id="summarySystemAssets">Logo、二维码、底部条未完整选择</dd>
+              </div>
+              <div>
+                <dt>任务状态</dt>
+                <dd id="summaryTask">未创建</dd>
+              </div>
+            </dl>
+            <div class="status-box" id="protocolBox" hidden>
+              <h3>接口问题记录</h3>
+              <ul id="protocolIssues"></ul>
+            </div>
+          </aside>
+
+          <div class="main-panel">
+            <section class="screen active" id="screenNodes" data-screen="nodes" aria-labelledby="nodesTitle">
+              <div class="screen-header">
+                <div>
+                  <p class="eyebrow">节点选择</p>
+                  <h2 id="nodesTitle">选择一个营销节点</h2>
+                  <p>优先选择当天要发朋友圈或社群的节日、节气、活动节点。</p>
+                </div>
+                <button class="secondary-button" type="button" id="reloadNodesBtn">刷新节点</button>
+              </div>
+
+              <div class="state-message" id="nodesMessage" hidden></div>
+              <div class="node-grid" id="nodeGrid" aria-live="polite"></div>
+
+              <div class="custom-node">
+                <h3>自定义节点入口</h3>
+                <div class="form-grid two">
+                  <label>
+                    <span>活动名称</span>
+                    <input id="customNodeName" type="text" maxlength="30" placeholder="例如：门店开业、客户答谢日" />
+                  </label>
+                  <label>
+                    <span>活动日期</span>
+                    <input id="customNodeDate" type="date" />
+                  </label>
+                </div>
+                <button class="ghost-button" type="button" id="useCustomNodeBtn">使用自定义节点</button>
+                <p class="hint">自定义节点需要后端提供可提交的节点ID后才能进入生成。</p>
+              </div>
+
+              <div class="screen-actions">
+                <button class="primary-button" type="button" id="goAssetsBtn" disabled>开始生成</button>
+              </div>
+            </section>
+
+            <section class="screen" id="screenAssets" data-screen="assets" aria-labelledby="assetsTitle">
+              <div class="screen-header">
+                <div>
+                  <p class="eyebrow">素材上传</p>
+                  <h2 id="assetsTitle">上传融合场景图并选择品牌素材</h2>
+                  <p>融合场景图、Logo、二维码和底部宣传条会共同决定最终海报能否直接发布。</p>
+                </div>
+                <button class="secondary-button" type="button" id="reloadAssetsBtn">刷新素材库</button>
+              </div>
+
+              <div class="upload-zone" id="dropZone">
+                <input id="productFileInput" type="file" accept="image/*" multiple hidden />
+                <div>
+                  <strong>拖拽或选择 1 张融合场景图</strong>
+                  <p>单张限制 10MB，建议使用已完成产品融合的 1080x1920 竖版场景图。</p>
+                </div>
+                <button class="secondary-button" type="button" id="pickProductFilesBtn">选择图片</button>
+              </div>
+              <div class="state-message" id="uploadMessage" hidden></div>
+              <div class="asset-preview-grid" id="productAssetGrid"></div>
+
+              <div class="asset-sections">
+                <section class="asset-section">
+                  <div class="section-title-row">
+                    <h3>Logo</h3>
+                    <button class="ghost-button small" type="button" data-upload-trigger="logo">上传Logo</button>
+                  </div>
+                  <input class="system-upload" data-upload-input="logo" type="file" accept="image/*" hidden />
+                  <div class="choice-grid" id="logoGrid"></div>
+                </section>
+
+                <section class="asset-section">
+                  <div class="section-title-row">
+                    <h3>二维码</h3>
+                    <button class="ghost-button small" type="button" data-upload-trigger="qrcode">上传二维码</button>
+                  </div>
+                  <input class="system-upload" data-upload-input="qrcode" type="file" accept="image/*" hidden />
+                  <div class="choice-grid" id="qrcodeGrid"></div>
+                </section>
+
+                <section class="asset-section">
+                  <div class="section-title-row">
+                    <h3>底部宣传条</h3>
+                    <button class="ghost-button small" type="button" data-upload-trigger="bottom_bar">上传底部条</button>
+                  </div>
+                  <input class="system-upload" data-upload-input="bottom_bar" type="file" accept="image/*" hidden />
+                  <div class="choice-grid" id="bottomBarGrid"></div>
+                  <p class="hint" id="bottomBarHint">未选择时请使用系统默认底部条或上传自定义底部条。</p>
+                </section>
+              </div>
+
+              <label class="wide-field">
+                <span>联系方式或门店信息</span>
+                <input id="contactInput" type="text" maxlength="80" placeholder="例如：扫码咨询 / 联系销售顾问" />
+              </label>
+
+              <div class="screen-actions">
+                <button class="secondary-button" type="button" data-back="nodes">返回</button>
+                <button class="primary-button" type="button" id="goConfigBtn" disabled>下一步</button>
+              </div>
+            </section>
+
+            <section class="screen" id="screenConfig" data-screen="config" aria-labelledby="configTitle">
+              <div class="screen-header">
+                <div>
+                  <p class="eyebrow">生成配置</p>
+                  <h2 id="configTitle">填写产品与补充需求</h2>
+                  <p>补充需求可写风格、传播场景和不能出现的内容。</p>
+                </div>
+                <button class="secondary-button" type="button" id="reloadProductsBtn">刷新产品</button>
+              </div>
+
+              <div class="form-grid two">
+                <label>
+                  <span>产品</span>
+                  <select id="productSelect"></select>
+                </label>
+                <label>
+                  <span>文案方向</span>
+                  <select id="copyDirectionSelect">
+                    <option value="节日祝福">节日祝福</option>
+                    <option value="健康饮水">健康饮水</option>
+                    <option value="促销咨询">促销咨询</option>
+                    <option value="品牌周年">品牌周年</option>
+                  </select>
+                </label>
+                <label>
+                  <span>风格偏好</span>
+                  <select id="styleSelect">
+                    <option value="科技蓝+环保绿">科技蓝+环保绿</option>
+                    <option value="暖色温馨">暖色温馨</option>
+                    <option value="红金喜庆">红金喜庆</option>
+                    <option value="极简高级">极简高级</option>
+                  </select>
+                </label>
+                <label>
+                  <span>模板</span>
+                  <input id="templateInput" type="text" value="template_v1_vertical_standard" />
+                </label>
+              </div>
+
+              <div class="form-grid two">
+                <label>
+                  <span>主标题偏好</span>
+                  <input id="titlePreferenceInput" type="text" maxlength="10" placeholder="可留空，不超过10字" />
+                </label>
+                <label>
+                  <span>副标题偏好</span>
+                  <input id="subtitlePreferenceInput" type="text" maxlength="30" placeholder="可留空，不超过30字" />
+                </label>
+              </div>
+
+              <label class="wide-field">
+                <span>补充需求</span>
+                <textarea id="customRequirementInput" rows="5" maxlength="500" placeholder="例如：暖色，有高级感，适合朋友圈传播；不要编造折扣。"></textarea>
+              </label>
+
+              <div class="state-message" id="taskMessage" hidden></div>
+              <div class="polling-panel" id="pollingPanel" hidden>
+                <div class="progress-track" aria-hidden="true">
+                  <span id="progressBar"></span>
+                </div>
+                <div class="polling-meta">
+                  <strong id="pollingStatus">等待创建任务</strong>
+                  <span id="pollingStep"></span>
+                </div>
+              </div>
+
+              <div class="screen-actions">
+                <button class="secondary-button" type="button" data-back="assets">返回</button>
+                <button class="primary-button" type="button" id="createTaskBtn">生成海报</button>
+              </div>
+            </section>
+
+            <section class="screen" id="screenPreview" data-screen="preview" aria-labelledby="previewTitle">
+              <div class="screen-header">
+                <div>
+                  <p class="eyebrow">海报预览</p>
+                  <h2 id="previewTitle">检查结果并下载 JPG</h2>
+                  <p>确认海报、文案和合规结果后，再下载发布用图片。</p>
+                </div>
+                <button class="secondary-button" type="button" id="newTaskBtn">新建任务</button>
+              </div>
+
+              <div class="preview-grid">
+                <div class="poster-frame">
+                  <div class="poster-empty" id="posterEmpty">任务完成后显示海报</div>
+                  <img id="posterImage" alt="生成的节日海报预览" hidden />
+                </div>
+
+                <div class="preview-controls">
+                  <section>
+                    <h3>后端结果</h3>
+                    <dl class="result-list">
+                      <div>
+                        <dt>任务状态</dt>
+                        <dd id="resultTaskStatus">未创建</dd>
+                      </div>
+                      <div>
+                        <dt>返回文案</dt>
+                        <dd id="resultCopy">等待后端返回</dd>
+                      </div>
+                      <div>
+                        <dt>海报JPG URL</dt>
+                        <dd id="resultPosterUrl">等待后端返回</dd>
+                      </div>
+                      <div>
+                        <dt>错误提示</dt>
+                        <dd id="resultError">无</dd>
+                      </div>
+                    </dl>
+                  </section>
+
+                  <section>
+                    <h3>后端文案</h3>
+                    <div class="form-grid one">
+                      <label>
+                        <span>主标题</span>
+                        <input id="previewTitleInput" type="text" maxlength="10" placeholder="等待后端返回" readonly />
+                      </label>
+                      <label>
+                        <span>副标题</span>
+                        <input id="previewSubtitleInput" type="text" maxlength="30" placeholder="等待后端返回" readonly />
+                      </label>
+                      <label hidden>
+                    <span>场景图切换</span>
+                        <select id="previewProductAssetSelect"></select>
+                      </label>
+                      <label hidden>
+                        <span>Logo位置</span>
+                        <select id="logoPositionSelect">
+                          <option value="top_left">左上</option>
+                          <option value="top_center">顶部居中</option>
+                          <option value="top_right">右上</option>
+                        </select>
+                      </label>
+                      <label hidden>
+                        <span>二维码</span>
+                        <select id="previewQrcodeSelect"></select>
+                      </label>
+                      <label hidden>
+                        <span>底部条</span>
+                        <select id="previewBottomBarSelect"></select>
+                      </label>
+                    </div>
+                    <p class="hint">此处只展示后端生成结果，不能在前端改写或补造文案。</p>
+                  </section>
+
+                  <section>
+                    <div class="section-title-row">
+                      <h3>合规检查</h3>
+                      <button class="ghost-button small" type="button" id="runComplianceBtn">重新检查</button>
+                    </div>
+                    <div class="compliance-card" id="complianceCard">
+                      <strong>等待检查</strong>
+                      <p>生成成功后会根据后端文案进行检查。</p>
+                    </div>
+                  </section>
+
+                  <div class="download-actions">
+                    <button class="primary-button" type="button" id="downloadBtn" disabled>下载JPG</button>
+                    <button class="secondary-button" type="button" data-back="config">返回配置</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="screen" id="screenHistory" data-screen="history" aria-labelledby="historyTitle">
+              <div class="screen-header">
+                <div>
+                  <p class="eyebrow">V1.5占位</p>
+                  <h2 id="historyTitle">最近生成记录</h2>
+                  <p>历史记录页按 PRD 后置，MVP 先保留入口和说明。</p>
+                </div>
+              </div>
+              <div class="empty-panel">
+                <strong>历史记录暂未实现</strong>
+                <p>等后端接入数据库与 `GET /api/v1/generated-posters` 后，再展示生成时间、节点、缩略图和下载链接。</p>
+              </div>
+              <div class="screen-actions">
+                <button class="primary-button" type="button" data-back="nodes">回到节点选择</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <template id="nodeCardTemplate">
+      <button class="node-card" type="button">
+        <span class="node-type"></span>
+        <strong></strong>
+        <p></p>
+        <div class="swatches"></div>
+        <small></small>
+      </button>
+    </template>
+
+    <template id="assetChoiceTemplate">
+      <button class="choice-card" type="button">
+        <span class="choice-thumb"></span>
+        <strong></strong>
+        <small></small>
+      </button>
+    </template>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>
