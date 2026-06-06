@@ -20,7 +20,7 @@ ALLOWED_IMAGE_MIME_TYPES = {
     "image/webp": ".webp",
 }
 
-CORS_ORIGINS = [
+DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
@@ -29,7 +29,6 @@ CORS_ORIGINS = [
     "http://127.0.0.1:8080",
     "http://localhost:5500",
     "http://127.0.0.1:5500",
-    "null",
 ]
 
 
@@ -108,6 +107,11 @@ def get_ai_settings() -> AISettings:
     return AISettings()
 
 
+def _read_csv(value: str, default: list[str]) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or default
+
+
 def _read_timeout(value: str, default: int, *, minimum: int = 1, maximum: int = 180) -> int:
     try:
         timeout = int(value)
@@ -139,6 +143,16 @@ def _is_real_base_url(value: str) -> bool:
     lowered = value.lower()
     placeholders = ("your-", "your_", "填写", "你的", "<")
     return not any(marker in lowered for marker in placeholders)
+
+
+CORS_ORIGINS = _read_csv(os.getenv("CORS_ORIGINS", ""), DEFAULT_CORS_ORIGINS)
+CORS_ALLOW_LOCALHOST = _read_bool(os.getenv("CORS_ALLOW_LOCALHOST", "true"), default=True)
+CORS_ALLOW_ORIGIN_REGEX = (
+    os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip()
+    or (r"^http://(localhost|127\.0\.0\.1):\d+$" if CORS_ALLOW_LOCALHOST else None)
+)
+API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip()
+API_ACCESS_TOKEN_REQUIRED = _is_real_secret(API_ACCESS_TOKEN)
 
 
 def ensure_storage_dirs() -> None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Any
 from uuid import uuid4
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -42,7 +45,9 @@ def error_response(
     message: str,
     status_code: int = 400,
     details: dict[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> JSONResponse:
+    request_id = request_id or make_request_id()
     return JSONResponse(
         status_code=status_code,
         content={
@@ -53,7 +58,7 @@ def error_response(
                 "message": message,
                 "details": details or {},
             },
-            "request_id": make_request_id(),
+            "request_id": request_id,
         },
     )
 
@@ -67,10 +72,13 @@ async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
     )
 
 
-async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    request_id = make_request_id()
+    LOGGER.exception("Unhandled API error request_id=%s path=%s", request_id, request.url.path)
     return error_response(
         code="INTERNAL_ERROR",
         message="服务内部错误，请稍后重试",
         status_code=500,
-        details={"error": str(exc)},
+        details={"request_id": request_id},
+        request_id=request_id,
     )

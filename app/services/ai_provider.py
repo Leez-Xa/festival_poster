@@ -5,7 +5,10 @@ import json
 import logging
 import random
 import re
+import ipaddress
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_CANVAS_SIZE = (1080, 1920)
+MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class AiProviderError(Exception):
@@ -975,10 +979,12 @@ def write_response_image(response: dict[str, Any], image_path: Path, timeout_sec
     for candidate in candidates:
         if candidate:
             image_path.write_bytes(base64.b64decode(strip_data_url(str(candidate))))
+            validate_downloaded_image(image_path)
             return
     url = first_image.get("url") or response.get("url")
     if url:
         image_path.write_bytes(download_image(str(url), timeout_seconds))
+        validate_downloaded_image(image_path)
         return
     raise AiProviderError("图片接口返回缺少 b64_json 或 url")
 
@@ -1010,13 +1016,51 @@ def append_image_constraints(
 
 
 def download_image(url: str, timeout_seconds: int) -> bytes:
+    validate_provider_image_url(url)
     try:
         with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
-            return response.read()
+            content_type = response.headers.get("Content-Type", "")
+            if content_type and not content_type.lower().split(";", 1)[0].startswith("image/"):
+                raise AiProviderError("图片 URL 返回的 Content-Type 不是图片")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_PROVIDER_IMAGE_BYTES:
+                    raise AiProviderError("图片 URL 下载超过大小限制")
+                chunks.append(chunk)
+            return b"".join(chunks)
     except urllib.error.HTTPError as exc:
         raise AiProviderError(f"图片 URL 下载 HTTP 错误：{exc.code}") from exc
     except urllib.error.URLError as exc:
         raise AiProviderError(f"图片 URL 下载失败：{exc.reason}") from exc
+
+
+def validate_provider_image_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise AiProviderError("图片 URL 只允许 http/https")
+    if not parsed.hostname:
+        raise AiProviderError("图片 URL 缺少 host")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as exc:
+        raise AiProviderError("图片 URL host 无法解析") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+            raise AiProviderError("图片 URL 指向非公网地址")
+
+
+def validate_downloaded_image(path: Path) -> None:
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except Exception as exc:
+        raise AiProviderError("图片接口返回内容不是有效图片") from exc
 
 
 def encode_image_base64(path: Path | None) -> str | None:

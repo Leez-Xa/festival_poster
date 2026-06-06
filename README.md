@@ -104,6 +104,8 @@ http://127.0.0.1:8000/api/v1
 
 如果不是，点 `恢复默认`，或手动填入上面的地址。
 
+如果服务器 `.env` 设置了 `API_ACCESS_TOKEN`，还需要在页面右上角 `访问令牌` 输入框填写同一个值；本地未设置时可以留空。访问令牌只保存在浏览器本地，不会写入项目文件。
+
 ## 正常使用流程
 
 1. 打开前端页面。
@@ -184,6 +186,13 @@ curl "http://127.0.0.1:8000/api/v1/assets?asset_type=product_image&source=produc
 .\.venv\Scripts\python.exe scripts\smoke_test.py
 ```
 
+如果默认 smoke test 端口被占用，可以临时换端口：
+
+```cmd
+set SMOKE_TEST_PORT=18084
+.\.venv\Scripts\python.exe scripts\smoke_test.py
+```
+
 如果只是检查服务是否启动，不要跑这个脚本，只跑 `/health` 即可。
 
 ## AI 中转站配置
@@ -255,8 +264,11 @@ AI_REQUIRE_IMAGE_FUSION=true
 - `POST /api/v1/assets`
 - `POST /api/v1/poster-tasks`
 - `GET /api/v1/poster-tasks/{task_id}`
+- `GET /api/v1/poster-tasks/{task_id}/composition`
 - `POST /api/v1/poster-tasks/{task_id}/rerender`
 - `POST /api/v1/compliance/check`
+
+`/storage/` 只公开 `generated/`、`uploads/`、`system/` 下的 JPG/PNG/WEBP 图片。SQLite、日志、pid 和 composition JSON 不走静态文件直链；合成参数请通过 `GET /api/v1/poster-tasks/{task_id}/composition` 读取。
 
 ## 目录说明
 

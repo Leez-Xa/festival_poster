@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import BackgroundTasks
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from app.config import GENERATED_DIR, get_ai_settings
+from app.config import GENERATED_DIR, STORAGE_DIR, get_ai_settings
 from app.db import get_product as db_get_product
 from app.db import get_task as db_get_task
 from app.db import update_task as db_update_task
@@ -120,6 +120,27 @@ def get_task(task_id: str) -> dict[str, Any]:
     }
 
 
+def get_task_composition(task_id: str) -> dict[str, Any]:
+    task = db_get_task(task_id)
+    if not task:
+        raise ApiError("NOT_FOUND", "Task not found", status_code=404, details={"task_id": task_id})
+    poster = task.get("poster") or {}
+    poster_path = storage_url_to_path(poster.get("jpg_url"))
+    if not poster_path:
+        raise ApiError("TASK_NOT_READY", "Composition is not ready.", status_code=409, details={"task_id": task_id})
+    composition_path = poster_path.with_name(poster_path.name.replace("poster", "composition", 1)).with_suffix(".json")
+    try:
+        composition_path.relative_to(STORAGE_DIR.resolve())
+    except ValueError as exc:
+        raise ApiError("FORBIDDEN", "Composition path is not allowed.", status_code=403) from exc
+    if not composition_path.exists() or not composition_path.is_file():
+        raise ApiError("NOT_FOUND", "Composition file not found.", status_code=404, details={"task_id": task_id})
+    try:
+        return json.loads(composition_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ApiError("BAD_RESPONSE", "Composition file is invalid.", status_code=500, details={"task_id": task_id}) from exc
+
+
 def run_task(task_id: str) -> None:
     try:
         update_task(task_id, status="processing", progress=12, current_step="Reading uploaded assets")
@@ -227,6 +248,7 @@ def rerender_task(task_id: str, payload: PosterTaskRerenderRequest) -> dict[str,
             output_variant=f"edit_{datetime.now().strftime('%H%M%S_%f')}_{copy['revision']}",
             copy_override=copy,
             compliance_override=compliance,
+            reuse_existing_scene=True,
         )
         db_update_task(
             task_id,
@@ -245,6 +267,7 @@ def compose_poster(
     *,
     copy_override: dict[str, Any] | None = None,
     compliance_override: dict[str, Any] | None = None,
+    reuse_existing_scene: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     task = db_get_task(task_id)
     if not task:
@@ -273,7 +296,14 @@ def compose_poster(
     thumbnail_path = output_dir / f"thumbnail{suffix}.jpg"
     composition_path = output_dir / f"composition{suffix}.json"
 
-    if asset_mode == "scene_image":
+    if reuse_existing_scene:
+        base_canvas, fusion_meta, local_product_overlay = build_reused_scene_canvas(
+            task=task,
+            payload=payload,
+            node=node,
+            product_asset=product_asset,
+        )
+    elif asset_mode == "scene_image":
         if not scene_asset:
             raise ApiError("BAD_REQUEST", "场景图素材不存在")
         base_canvas, fusion_meta, local_product_overlay = build_scene_canvas(scene_asset=scene_asset)
@@ -288,6 +318,12 @@ def compose_poster(
             scene_reference_asset=scene_reference_asset,
             output_dir=output_dir,
         )
+
+    if not reuse_existing_scene:
+        scene_base_path = output_dir / f"scene_base{suffix}.jpg"
+        base_canvas.convert("RGB").save(scene_base_path, "JPEG", quality=92, optimize=True)
+        fusion_meta["base_scene_url"] = public_storage_url(scene_base_path)
+        fusion_meta["rerender_product_overlay"] = local_product_overlay
 
     canvas = apply_layout_panels(base_canvas, layout)
     draw = ImageDraw.Draw(canvas)
@@ -344,7 +380,7 @@ def compose_poster(
         "width": CANVAS_SIZE[0],
         "height": CANVAS_SIZE[1],
         "file_size_bytes": poster_path.stat().st_size,
-        "composition_json_url": public_storage_url(composition_path),
+        "composition_json_url": f"/api/v1/poster-tasks/{task_id}/composition",
         "copy": {
             "title": copy["title"],
             "subtitle": copy["subtitle"],
@@ -502,6 +538,58 @@ def build_local_fallback_scene_canvas(
     )
 
 
+def build_reused_scene_canvas(
+    *,
+    task: dict[str, Any],
+    payload: PosterTaskCreate,
+    node: dict[str, Any],
+    product_asset: dict[str, Any] | None,
+) -> tuple[Image.Image, dict[str, Any], bool]:
+    previous_fusion = dict(task.get("fusion") or {})
+    base_scene_path = storage_url_to_path(previous_fusion.get("base_scene_url"))
+    if not base_scene_path or not base_scene_path.exists():
+        raise ApiError(
+            "RERENDER_SCENE_CACHE_MISSING",
+            "Preview rerender scene cache is missing; please create a new poster task.",
+            details={"task_id": task.get("task_id")},
+        )
+
+    previous_fusion["warnings"] = [
+        *(previous_fusion.get("warnings") or []),
+        "Reused cached scene for copy-only rerender; AI image fusion was not called again.",
+    ]
+    previous_fusion["rerender_reused_scene"] = True
+    previous_fusion["positive_prompt"] = previous_fusion.get("positive_prompt") or payload.scene_prompt or payload.custom_requirement
+    previous_fusion["negative_prompt"] = previous_fusion.get("negative_prompt") or ""
+    previous_fusion["fallback"] = previous_fusion.get("fallback") or {"used": False, "type": "none", "reason": None}
+    previous_fusion["fit"] = previous_fusion.get("scene_fit") or scene_fit_meta(base_scene_path)
+    previous_fusion["source_size"] = tuple(previous_fusion.get("source_size") or image_size(base_scene_path) or CANVAS_SIZE)
+    previous_fusion["background_asset"] = None
+    previous_fusion["base_scene_url"] = previous_fusion.get("base_scene_url")
+    local_product_overlay = bool(previous_fusion.get("rerender_product_overlay"))
+
+    if local_product_overlay and not product_asset:
+        raise ApiError("BAD_REQUEST", "Product asset is required for copy rerender.")
+
+    return (
+        load_canvas_image(base_scene_path, blur_radius=0, tint_color=None, tint_alpha=0),
+        previous_fusion,
+        local_product_overlay,
+    )
+
+
+def storage_url_to_path(url: str | None) -> Path | None:
+    if not url or not url.startswith("/storage/"):
+        return None
+    relative = Path(url.removeprefix("/storage/"))
+    try:
+        path = (STORAGE_DIR / relative).resolve()
+        path.relative_to(STORAGE_DIR.resolve())
+    except ValueError:
+        return None
+    return path
+
+
 def build_composition_fusion(
     *,
     payload: PosterTaskCreate,
@@ -545,6 +633,9 @@ def build_composition_fusion(
         "source_size": list(fusion_meta["source_size"]) if fusion_meta.get("source_size") else None,
         "fallback": fusion_meta["fallback"],
         "warnings": fusion_meta.get("warnings", []),
+        "base_scene_url": fusion_meta.get("base_scene_url"),
+        "rerender_product_overlay": bool(fusion_meta.get("rerender_product_overlay")),
+        "rerender_reused_scene": bool(fusion_meta.get("rerender_reused_scene")),
     }
 
 

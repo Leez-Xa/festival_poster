@@ -49,9 +49,21 @@ python3 -m venv .venv
 ```bash
 cp .env.example .env
 nano .env
+chmod 640 .env
 ```
 
 只在服务器 `.env` 写真实 Key。不要把真实 Key 写进代码、README、提交记录或日志。
+
+生产建议至少确认：
+
+```dotenv
+CORS_ORIGINS=http://your-domain.com,https://your-domain.com
+CORS_ALLOW_LOCALHOST=false
+API_ACCESS_TOKEN=replace_with_a_long_random_server_only_token
+AI_REQUIRE_IMAGE_FUSION=true
+```
+
+`API_ACCESS_TOKEN` 是 MVP 的轻量访问保护。设置后，上传、创建任务、查询任务、合规检查和重渲染接口需要前端右上角“访问令牌”填写同一个值；不设置时保持本地演示模式。
 
 SQLite 数据库默认位于：
 
@@ -93,6 +105,7 @@ WantedBy=multi-user.target
 授权并启动：
 
 ```bash
+sudo chown www-data:www-data /opt/festival_poster/.env
 sudo chown -R www-data:www-data /opt/festival_poster/storage
 sudo systemctl daemon-reload
 sudo systemctl enable --now festival-poster-api
@@ -149,6 +162,8 @@ server {
 }
 ```
 
+后端 `/storage/` 只允许公开 `generated/`、`uploads/`、`system/` 下的 JPG/PNG/WEBP 图片。SQLite、日志、pid、JSON 合成参数等不会通过 `/storage/` 直接返回；合成参数请走 `/api/v1/poster-tasks/{task_id}/composition`。
+
 启用站点：
 
 ```bash
@@ -168,11 +183,44 @@ http://your-domain.com/api/v1
 ## 生产安全项
 
 - `.env` 只保留在服务器本地。
-- `storage/` 做持久化备份。
+- `.env` 不要 world-readable，建议 `chmod 640` 并由服务用户读取。
+- `storage/` 做持久化备份，尤其是 `storage/festival_poster.sqlite3`、`storage/uploads/`、`storage/generated/`。
 - 阿里云安全组只开放必要端口。
-- 生产环境建议把 CORS 收紧到正式域名或服务器 IP。
+- 生产环境把 CORS 收紧到正式域名或服务器 IP，并设置 `CORS_ALLOW_LOCALHOST=false`。
+- 对外部署建议设置 `API_ACCESS_TOKEN`，降低公开上传和生图接口被滥用的风险。
 - 如果启用 HTTPS，使用阿里云证书或 Certbot，并把 Nginx 监听改为 `443 ssl`。
 - 不要在服务器上执行清空 `storage/` 的操作，避免丢失 SQLite、上传素材和生成结果。
+
+## 更新、备份和回滚
+
+发布新版前先备份运行数据：
+
+```bash
+cd /opt/festival_poster
+mkdir -p storage/backups
+cp storage/festival_poster.sqlite3 storage/backups/festival_poster_$(date +%Y%m%d_%H%M%S).sqlite3
+```
+
+更新代码并重启：
+
+```bash
+git pull --ff-only
+./.venv/bin/pip install -r requirements.txt
+sudo systemctl restart festival-poster-api
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+验证：
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/v1/products
+curl -I http://127.0.0.1:8000/storage/festival_poster.sqlite3
+```
+
+最后一个命令应返回 `403` 或 `404`，不能返回数据库文件。
+
+如需回滚，切回上一个 Git 提交并重启服务；如果数据库也需要回滚，先停止服务，再用备份 SQLite 覆盖当前数据库。
 
 ## 不触发生图的上线检查
 

@@ -4,8 +4,10 @@ import json
 import mimetypes
 import os
 import pathlib
+import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -14,7 +16,9 @@ from PIL import Image, ImageDraw
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-BASE_URL = "http://127.0.0.1:8000"
+HOST = "127.0.0.1"
+PORT = int(os.getenv("SMOKE_TEST_PORT", "18083"))
+BASE_URL = f"http://{HOST}:{PORT}"
 
 
 def request(method: str, path: str, body: object | bytes | None = None, headers: dict[str, str] | None = None):
@@ -55,9 +59,11 @@ def multipart_upload(path: str, fields: dict[str, str], file_field: str, file_pa
     return request("POST", path, b"".join(parts), {"Content-Type": f"multipart/form-data; boundary={boundary}"})
 
 
-def wait_until_ready() -> None:
+def wait_until_ready(process: subprocess.Popen[str]) -> None:
     for _ in range(40):
         try:
+            if process.poll() is not None:
+                raise RuntimeError("uvicorn exited before health check")
             _, payload = request("GET", "/health")
             if payload.get("success") and payload.get("data", {}).get("status") == "ok":
                 return
@@ -65,6 +71,12 @@ def wait_until_ready() -> None:
             time.sleep(0.25)
     raise RuntimeError("health check did not become ready")
 
+
+def assert_port_available(host: str, port: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        if sock.connect_ex((host, port)) == 0:
+            raise RuntimeError(f"smoke test port {host}:{port} is already in use")
 
 def create_smoke_product_png() -> pathlib.Path:
     target_dir = ROOT / "storage" / "tmp"
@@ -84,15 +96,18 @@ def create_smoke_product_png() -> pathlib.Path:
 
 
 def main() -> None:
+    assert_port_available(HOST, PORT)
     env = os.environ.copy()
     env["AI_BASE_URL"] = ""
     env["GPT_TEXT_API_KEY"] = ""
     env["GPT_IMAGE_API_KEY"] = ""
     env["GPT_TEXT_MODEL"] = "gpt-mock"
     env["GPT_IMAGE_MODEL"] = "image2.0-mock"
+    env["AI_REQUIRE_IMAGE_FUSION"] = "false"
+    env["API_ACCESS_TOKEN"] = ""
 
     process = subprocess.Popen(
-        [str(PYTHON), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+        [str(PYTHON), "-m", "uvicorn", "app.main:app", "--host", HOST, "--port", str(PORT)],
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -100,7 +115,7 @@ def main() -> None:
         env=env,
     )
     try:
-        wait_until_ready()
+        wait_until_ready(process)
 
         _, nodes = request("GET", "/api/v1/marketing-nodes")
         _, products = request("GET", "/api/v1/products")
@@ -176,6 +191,29 @@ def main() -> None:
         if not isinstance(jpg_bytes, bytes) or len(jpg_bytes) < 1000:
             raise RuntimeError("generated JPG URL is not accessible")
 
+        composition_url = task["data"]["poster"]["composition_json_url"]
+        _, composition = request("GET", composition_url)
+        if composition["data"]["task_id"] != task_id:
+            raise RuntimeError("composition endpoint returned unexpected task_id")
+
+        _, rerender = request(
+            "POST",
+            f"/api/v1/poster-tasks/{task_id}/rerender",
+            {
+                "title": "立冬暖意",
+                "subtitle": "清润好水，陪伴温暖时刻",
+            },
+        )
+        if rerender["data"]["status"] != "success" or not rerender["data"]["fusion"].get("rerender_reused_scene"):
+            raise RuntimeError("rerender did not reuse cached scene")
+
+        try:
+            request("GET", "/storage/festival_poster.sqlite3")
+            raise RuntimeError("storage database was unexpectedly public")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {403, 404}:
+                raise
+
         print(
             json.dumps(
                 {
@@ -190,6 +228,8 @@ def main() -> None:
                     "copy_source": task["data"]["copy"]["source"],
                     "jpg_url": jpg_url,
                     "jpg_size_bytes": len(jpg_bytes),
+                    "composition_api": composition_url,
+                    "rerender_reused_scene": rerender["data"]["fusion"].get("rerender_reused_scene"),
                 },
                 ensure_ascii=False,
                 indent=2,

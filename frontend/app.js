@@ -1,5 +1,8 @@
 const TASK_STATUSES = new Set(["pending", "processing", "success", "failed"]);
 const AI_IMAGE_WARNING_MS = 120000;
+const AI_IMAGE_MAX_POLL_MS = 240000;
+const POLL_INTERVAL_MS = 2500;
+const POLL_INTERVAL_SLOW_MS = 5000;
 const API_BASE_FALLBACK = (() => {
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   if (isHttpPage && location.hostname && !["localhost", "127.0.0.1"].includes(location.hostname)) {
@@ -14,6 +17,7 @@ const API_BASE_FALLBACK = (() => {
 const state = {
   currentScreen: "nodes",
   apiBase: localStorage.getItem("festivalPoster.apiBase") || API_BASE_FALLBACK,
+  apiToken: localStorage.getItem("festivalPoster.apiToken") || "",
   nodes: [],
   selectedNode: null,
   customNodeDraft: null,
@@ -52,6 +56,7 @@ const state = {
 
 const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
+  apiTokenInput: document.querySelector("#apiTokenInput"),
   resetApiBaseBtn: document.querySelector("#resetApiBaseBtn"),
   stepper: document.querySelector("#stepper"),
   screens: [...document.querySelectorAll(".screen")],
@@ -153,6 +158,10 @@ function resolveReturnedUrl(url) {
   }
 }
 
+function authHeaders() {
+  return state.apiToken ? { "X-API-Token": state.apiToken } : {};
+}
+
 function addProtocolIssue(issue) {
   if (!issue || state.protocolIssues.includes(issue)) return;
   state.protocolIssues.push(issue);
@@ -189,6 +198,7 @@ async function request(path, options = {}) {
     method: options.method || "GET",
     headers: {
       "X-Demo-User-Id": "demo_sales_user",
+      ...authHeaders(),
       ...(options.headers || {}),
     },
   };
@@ -541,40 +551,54 @@ async function uploadProductFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
 
-  const file = files[0];
   const uploadMode = state.sourceMode === "scene_image" ? "scene_image" : "upload_product";
   const assetType = uploadMode === "scene_image" ? "scene_image" : "product_image";
   if (state.sourceMode === "system_product") {
     setSourceMode("upload_product");
   }
-  if (files.length > 1) {
-    showMessage(els.uploadMessage, `MVP 当前仅使用 1 张${assetLabel(assetType)}，已取第一张。`, "warning");
-  } else {
-    showMessage(els.uploadMessage, `正在上传${assetLabel(assetType)}...`);
-  }
 
-  if (!file.type.startsWith("image/")) {
-    showMessage(els.uploadMessage, `${file.name} 不是支持的图片类型。`, "warning");
+  const selectedFiles = assetType === "scene_image" ? files.slice(0, 1) : files.slice(0, Math.max(0, 5 - state.productAssets.length));
+  if (!selectedFiles.length) {
+    showMessage(els.uploadMessage, "本次任务最多支持 5 张产品图，请先移出不需要的图片。", "warning");
     return;
   }
-  if (file.size > 10 * 1024 * 1024) {
-    showMessage(els.uploadMessage, `${file.name} 超过 10MB，请重新选择。`, "warning");
+  if (assetType === "scene_image" && files.length > 1) {
+    showMessage(els.uploadMessage, "整张场景图模式只使用 1 张图片，已取第一张。", "warning");
+  } else if (assetType === "product_image" && selectedFiles.length < files.length) {
+    showMessage(els.uploadMessage, `MVP 单次最多 5 张产品图，本次将上传前 ${selectedFiles.length} 张。`, "warning");
+  } else {
+    showMessage(els.uploadMessage, `正在上传 ${selectedFiles.length} 张${assetLabel(assetType)}...`);
+  }
+
+  const invalidFile = selectedFiles.find((file) => !file.type.startsWith("image/"));
+  if (invalidFile) {
+    showMessage(els.uploadMessage, `${invalidFile.name} 不是支持的图片类型。`, "warning");
+    return;
+  }
+  const oversizedFile = selectedFiles.find((file) => file.size > 10 * 1024 * 1024);
+  if (oversizedFile) {
+    showMessage(els.uploadMessage, `${oversizedFile.name} 超过 10MB，请重新选择。`, "warning");
     return;
   }
 
   try {
-    const asset = await uploadAsset(file, assetType, { product_id: state.selectedProductId });
-    requiredFields(`upload ${assetType} asset`, asset, ["id", "asset_type", "public_url"]);
+    const uploadedAssets = [];
+    for (const [index, file] of selectedFiles.entries()) {
+      showMessage(els.uploadMessage, `正在上传 ${index + 1} / ${selectedFiles.length}：${file.name}`);
+      const asset = await uploadAsset(file, assetType, { product_id: state.selectedProductId });
+      requiredFields(`upload ${assetType} asset`, asset, ["id", "asset_type", "public_url"]);
+      uploadedAssets.push(asset);
+    }
     if (assetType === "scene_image") {
-      state.sceneAsset = asset;
+      state.sceneAsset = uploadedAssets[0];
       state.productAssets = [];
     } else {
-      state.productAssets = [asset];
+      state.productAssets = [...state.productAssets, ...uploadedAssets].slice(0, 5);
       state.sceneAsset = null;
     }
     renderProductAssets();
     renderSummary();
-    showMessage(els.uploadMessage, `${assetLabel(assetType)}上传完成。`, "success");
+    showMessage(els.uploadMessage, `${uploadedAssets.length} 张${assetLabel(assetType)}上传完成。`, "success");
   } catch (error) {
     showMessage(els.uploadMessage, `${error.code}: ${error.message}`, "error");
   }
@@ -969,6 +993,18 @@ function startPolling(taskId) {
 }
 
 async function pollTask(taskId, startedAt) {
+  if (Date.now() - startedAt > AI_IMAGE_MAX_POLL_MS) {
+    stopPolling();
+    updatePollingPanel({
+      status: "processing",
+      progress: state.activeTask?.progress || 0,
+      current_step: "轮询已暂停，任务可能仍在后端处理中",
+    });
+    showMessage(els.taskMessage, "生成已超过4分钟，前端已暂停轮询。可稍后重新创建任务，或检查模型服务与后端日志。", "warning");
+    els.createTaskBtn.disabled = false;
+    renderSummary();
+    return;
+  }
   try {
     const data = await request(`/poster-tasks/${encodeURIComponent(taskId)}`);
     handleTaskUpdate(data, startedAt);
@@ -991,7 +1027,9 @@ async function pollTask(taskId, startedAt) {
 }
 
 function scheduleNextPoll(taskId, startedAt) {
-  state.pollingTimer = window.setTimeout(() => pollTask(taskId, startedAt), 2500);
+  const elapsed = Date.now() - startedAt;
+  const delay = elapsed > AI_IMAGE_WARNING_MS ? POLL_INTERVAL_SLOW_MS : POLL_INTERVAL_MS;
+  state.pollingTimer = window.setTimeout(() => pollTask(taskId, startedAt), delay);
 }
 
 function stopPolling() {
@@ -1162,6 +1200,9 @@ function formatFusionResult(fusion) {
     `model=${fusion.model || "unknown"}`,
     `fallback.used=${fallback.used ? "true" : "false"}`,
   ];
+  if (fusion.rerender_reused_scene) {
+    pieces.push("rerender.reused_scene=true");
+  }
   if (fallback.reason) {
     pieces.push(`fallback.reason=${fallback.reason}`);
   }
@@ -1384,6 +1425,13 @@ function scheduleComplianceCheck() {
   state.complianceTimer = window.setTimeout(runComplianceCheck, 500);
 }
 
+function clearComplianceTimer() {
+  if (state.complianceTimer) {
+    window.clearTimeout(state.complianceTimer);
+    state.complianceTimer = null;
+  }
+}
+
 function markPreviewCopyDirty() {
   if (!state.poster?.jpg_url) return;
   state.copyDirty = true;
@@ -1398,7 +1446,9 @@ async function downloadPoster() {
   if (!canDownload()) return;
   els.downloadBtn.disabled = true;
   try {
-    const response = await fetch(resolveReturnedUrl(state.poster.jpg_url));
+    const response = await fetch(resolveReturnedUrl(state.poster.jpg_url), {
+      headers: authHeaders(),
+    });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -1420,6 +1470,7 @@ async function downloadPoster() {
 
 function newTask() {
   stopPolling();
+  clearComplianceTimer();
   state.activeTask = null;
   state.poster = null;
   state.copyDirty = false;
@@ -1434,6 +1485,24 @@ function newTask() {
   els.previewTitleInput.value = "";
   els.previewSubtitleInput.value = "";
   setScreen("nodes");
+  renderBackendResult();
+  renderSummary();
+  renderCompliance();
+}
+
+function resetRuntimeTaskState() {
+  stopPolling();
+  clearComplianceTimer();
+  state.activeTask = null;
+  state.poster = null;
+  state.copyDirty = false;
+  state.rerendering = false;
+  state.compliance = { status: "unknown", issues: [], risk_level: "", suggested_title: "", suggested_subtitle: "" };
+  els.pollingPanel.hidden = true;
+  els.progressBar.style.width = "0";
+  els.posterImage.removeAttribute("src");
+  els.posterImage.hidden = true;
+  els.posterEmpty.hidden = false;
   renderBackendResult();
   renderSummary();
   renderCompliance();
@@ -1454,10 +1523,24 @@ function escapeHtml(value) {
 
 function bindEvents() {
   els.apiBaseInput.value = state.apiBase;
+  if (els.apiTokenInput) {
+    els.apiTokenInput.value = state.apiToken;
+    els.apiTokenInput.addEventListener("change", () => {
+      state.apiToken = els.apiTokenInput.value.trim();
+      if (state.apiToken) {
+        localStorage.setItem("festivalPoster.apiToken", state.apiToken);
+      } else {
+        localStorage.removeItem("festivalPoster.apiToken");
+      }
+      resetRuntimeTaskState();
+      showMessage(els.taskMessage, "访问令牌已更新，当前任务状态已重置，请重新创建或查询任务。", "warning");
+    });
+  }
   els.apiBaseInput.addEventListener("change", () => {
     state.apiBase = normalizeApiBase(els.apiBaseInput.value) || API_BASE_FALLBACK;
     els.apiBaseInput.value = state.apiBase;
     localStorage.setItem("festivalPoster.apiBase", state.apiBase);
+    resetRuntimeTaskState();
     loadNodes();
     loadSystemAssets();
     loadProducts();
@@ -1467,6 +1550,7 @@ function bindEvents() {
     state.apiBase = API_BASE_FALLBACK;
     els.apiBaseInput.value = state.apiBase;
     state.protocolIssues = [];
+    resetRuntimeTaskState();
     renderProtocolIssues();
     loadNodes();
     loadSystemAssets();

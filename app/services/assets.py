@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -112,15 +113,36 @@ async def save_upload(
 
 def validate_image_content(content: bytes, *, asset_type: str, content_type: str | None) -> None:
     try:
-        with Image.open(BytesIO(content)) as image:
-            image.verify()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                width, height = image.size
+                if width <= 0 or height <= 0:
+                    raise ApiError("ASSET_TYPE_NOT_SUPPORTED", "Uploaded image has invalid dimensions")
+                if width * height > MAX_PUBLIC_PRODUCT_IMAGE_PIXELS:
+                    raise ApiError(
+                        "ASSET_FILE_TOO_LARGE",
+                        "Uploaded image dimensions are too large",
+                        details={"max_pixels": MAX_PUBLIC_PRODUCT_IMAGE_PIXELS},
+                    )
+                if max(width, height) > MAX_PUBLIC_PRODUCT_IMAGE_EDGE:
+                    raise ApiError(
+                        "ASSET_FILE_TOO_LARGE",
+                        "Uploaded image edge is too large",
+                        details={"max_edge": MAX_PUBLIC_PRODUCT_IMAGE_EDGE},
+                    )
+                image.verify()
+    except ApiError:
+        raise
     except Exception as exc:
         raise ApiError("ASSET_TYPE_NOT_SUPPORTED", "Uploaded file is not a valid image") from exc
 
     if asset_type == "product_image":
         try:
-            with Image.open(BytesIO(content)) as image:
-                image_has_transparency(image)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(BytesIO(content)) as image:
+                    image_has_transparency(image)
         except Exception as exc:
             raise ApiError("ASSET_TYPE_NOT_SUPPORTED", "产品图不是有效图片") from exc
 
