@@ -162,7 +162,7 @@ def main() -> None:
                 "scene_asset_id": None,
                 "product_asset_ids": [asset_id],
                 "logo_asset_id": logos["data"]["items"][0]["id"],
-                "qrcode_asset_id": None,
+                "qrcode_asset_id": qrcodes["data"]["items"][0]["id"],
                 "bottom_bar_asset_id": bottom_bars["data"]["items"][0]["id"],
                 "contact_text": "扫码咨询当地销售顾问",
                 "scene_prompt": "请让产品融入立冬暖色营销场景，产品明显可见并与背景和谐",
@@ -195,6 +195,16 @@ def main() -> None:
         _, composition = request("GET", composition_url)
         if composition["data"]["task_id"] != task_id:
             raise RuntimeError("composition endpoint returned unexpected task_id")
+        fusion = composition["data"]["fusion"]
+        if fusion["safe_zones"]["qrcode"] is None:
+            raise RuntimeError("qrcode safe zone should be present when qrcode_asset_id is provided")
+        if not fusion.get("ai_receives_brand_assets"):
+            raise RuntimeError("AI fusion did not receive brand reference assets")
+        if fusion.get("brand_protection_mode") != "ai_fusion_with_exact_final_overlay":
+            raise RuntimeError("brand protection mode was not enabled")
+        brand_roles = set(fusion.get("brand_asset_roles") or [])
+        if not {"logo", "bottom_bar", "qrcode"}.issubset(brand_roles):
+            raise RuntimeError("brand reference roles are incomplete: " + json.dumps(sorted(brand_roles), ensure_ascii=False))
 
         _, rerender = request(
             "POST",

@@ -205,6 +205,13 @@ def main() -> None:
         fusion = composition["data"]["fusion"]
         if fusion["safe_zones"]["qrcode"] is not None:
             raise RuntimeError("qrcode safe zone should be null when qrcode_asset_id is null")
+        if not fusion.get("ai_receives_brand_assets"):
+            raise RuntimeError("AI fusion did not receive brand reference assets")
+        if fusion.get("brand_protection_mode") != "ai_fusion_with_exact_final_overlay":
+            raise RuntimeError("brand protection mode was not enabled")
+        brand_roles = set(fusion.get("brand_asset_roles") or [])
+        if not {"logo", "bottom_bar"}.issubset(brand_roles):
+            raise RuntimeError("brand reference roles are incomplete: " + json.dumps(sorted(brand_roles), ensure_ascii=False))
 
         try:
             request("GET", "/storage/festival_poster.sqlite3")
@@ -226,6 +233,9 @@ def main() -> None:
                     "jpg_url": jpg_url,
                     "jpg_size_bytes": len(jpg_bytes),
                     "qrcode_extra_overlay": False,
+                    "ai_receives_brand_assets": fusion.get("ai_receives_brand_assets"),
+                    "brand_asset_roles": fusion.get("brand_asset_roles"),
+                    "brand_protection_mode": fusion.get("brand_protection_mode"),
                     "fusion_provider": fusion.get("provider"),
                     "fusion_mode": fusion.get("mode"),
                 },

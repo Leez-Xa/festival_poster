@@ -18,7 +18,7 @@ from app.db import upsert_task
 from app.layout import get_template_layout
 from app.models import PosterTaskCreate, PosterTaskRerenderRequest
 from app.responses import ApiError
-from app.services.ai_provider import AiProviderError, CopyGenerationResult, default_safe_zones, get_ai_provider
+from app.services.ai_provider import BrandReferenceAsset, AiProviderError, CopyGenerationResult, default_safe_zones, get_ai_provider
 from app.services.assets import get_asset, require_asset
 from app.services.compliance import check_copy
 from app.utils import load_font, new_id, now_iso, public_storage_url
@@ -318,6 +318,9 @@ def compose_poster(
             copy=copy,
             product_asset=product_asset,
             scene_reference_asset=scene_reference_asset,
+            logo_asset=logo_asset,
+            qrcode_asset=qrcode_asset,
+            bottom_bar_asset=bottom_bar_asset,
             output_dir=output_dir,
         )
 
@@ -328,15 +331,16 @@ def compose_poster(
         fusion_meta["rerender_product_overlay"] = local_product_overlay
 
     ai_handles_copy = bool(fusion_meta.get("ai_handles_copy"))
+    ai_handles_brand_assets = fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
     canvas = base_canvas.convert("RGBA") if ai_handles_copy else apply_layout_panels(base_canvas, layout)
     draw = ImageDraw.Draw(canvas)
 
     if local_product_overlay and product_asset:
         paste_product_local(canvas, Path(product_asset["_file_path"]), layout)
-    paste_logo(canvas, Path(logo_asset["_file_path"]), layout)
+    paste_logo(canvas, Path(logo_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
     if not ai_handles_copy:
         draw_text_block(draw, copy["title"], copy["subtitle"], layout)
-    paste_bottom_bar(canvas, Path(bottom_bar_asset["_file_path"]), layout)
+    paste_bottom_bar(canvas, Path(bottom_bar_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
     if not ai_handles_copy:
         draw_footer_text(
             draw,
@@ -345,7 +349,7 @@ def compose_poster(
             custom_requirement=payload.custom_requirement,
         )
     if qrcode_asset:
-        paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout)
+        paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
 
     poster_copy = {
         "title": (fusion_meta.get("on_image_title") or copy["title"]) if ai_handles_copy else copy["title"],
@@ -415,6 +419,10 @@ def build_scene_canvas(*, scene_asset: dict[str, Any]) -> tuple[Image.Image, dic
             "positive_prompt": "",
             "negative_prompt": "",
             "preserve_product_pixels": True,
+            "ai_receives_brand_assets": False,
+            "brand_asset_roles": [],
+            "brand_protection_mode": "none",
+            "protected_brand_asset_ids": {},
             "source_size": image_size(image_path),
             "fit": scene_fit_meta(image_path),
             "warnings": [],
@@ -433,6 +441,9 @@ def build_ai_scene_canvas(
     copy: dict[str, Any] | None,
     product_asset: dict[str, Any],
     scene_reference_asset: dict[str, Any] | None,
+    logo_asset: dict[str, Any],
+    qrcode_asset: dict[str, Any] | None,
+    bottom_bar_asset: dict[str, Any],
     output_dir: Path,
 ) -> tuple[Image.Image, dict[str, Any], bool]:
     ai_settings = get_ai_settings()
@@ -451,6 +462,11 @@ def build_ai_scene_canvas(
 
     product_path = Path(product_asset["_file_path"])
     scene_reference_path = Path(scene_reference_asset["_file_path"]) if scene_reference_asset else None
+    brand_reference_assets = build_brand_reference_assets(
+        logo_asset=logo_asset,
+        qrcode_asset=qrcode_asset,
+        bottom_bar_asset=bottom_bar_asset,
+    )
     try:
         product_reference_path = prepare_product_reference_png(product_path, output_dir / "product_reference.png")
         fusion = get_ai_provider().generate_scene_with_product(
@@ -464,6 +480,7 @@ def build_ai_scene_canvas(
             copy=copy,
             canvas_size=CANVAS_SIZE,
             safe_zones=default_safe_zones(),
+            brand_reference_assets=brand_reference_assets,
         )
         return (
             load_canvas_image(fusion.image_path, blur_radius=0, tint_color=None, tint_alpha=0),
@@ -485,6 +502,10 @@ def build_ai_scene_canvas(
                 "node_style_prompt": fusion.node_style_prompt,
                 "final_image_prompt": fusion.final_image_prompt or fusion.prompt,
                 "reference_analysis_fallback_used": fusion.reference_analysis_fallback_used,
+                "ai_receives_brand_assets": fusion.ai_receives_brand_assets,
+                "brand_asset_roles": fusion.brand_asset_roles,
+                "brand_protection_mode": fusion.brand_protection_mode,
+                "protected_brand_asset_ids": fusion.protected_brand_asset_ids,
                 "source_size": image_size(fusion.image_path),
                 "fit": scene_fit_meta(fusion.image_path),
                 "warnings": fusion.warnings,
@@ -527,6 +548,21 @@ def prepare_product_reference_png(source_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def build_brand_reference_assets(
+    *,
+    logo_asset: dict[str, Any],
+    qrcode_asset: dict[str, Any] | None,
+    bottom_bar_asset: dict[str, Any],
+) -> list[BrandReferenceAsset]:
+    assets = [
+        BrandReferenceAsset(role="logo", asset_id=logo_asset["id"], path=Path(logo_asset["_file_path"])),
+        BrandReferenceAsset(role="bottom_bar", asset_id=bottom_bar_asset["id"], path=Path(bottom_bar_asset["_file_path"])),
+    ]
+    if qrcode_asset:
+        assets.append(BrandReferenceAsset(role="qrcode", asset_id=qrcode_asset["id"], path=Path(qrcode_asset["_file_path"])))
+    return assets
+
+
 def build_local_fallback_scene_canvas(
     *,
     node: dict[str, Any],
@@ -559,6 +595,10 @@ def build_local_fallback_scene_canvas(
             "node_style_prompt": "",
             "final_image_prompt": payload.scene_prompt or payload.custom_requirement,
             "reference_analysis_fallback_used": True,
+            "ai_receives_brand_assets": False,
+            "brand_asset_roles": [],
+            "brand_protection_mode": "none",
+            "protected_brand_asset_ids": {},
             "source_size": image_size(source_path),
             "fit": scene_fit_meta(source_path),
             "warnings": [fallback_reason],
@@ -597,6 +637,10 @@ def build_reused_scene_canvas(
     previous_fusion["source_size"] = tuple(previous_fusion.get("source_size") or image_size(base_scene_path) or CANVAS_SIZE)
     previous_fusion["background_asset"] = None
     previous_fusion["base_scene_url"] = previous_fusion.get("base_scene_url")
+    previous_fusion["ai_receives_brand_assets"] = bool(previous_fusion.get("ai_receives_brand_assets"))
+    previous_fusion["brand_asset_roles"] = previous_fusion.get("brand_asset_roles") or []
+    previous_fusion["brand_protection_mode"] = previous_fusion.get("brand_protection_mode") or "none"
+    previous_fusion["protected_brand_asset_ids"] = previous_fusion.get("protected_brand_asset_ids") or {}
     local_product_overlay = bool(previous_fusion.get("rerender_product_overlay"))
 
     if local_product_overlay and not product_asset:
@@ -653,12 +697,20 @@ def build_composition_fusion(
         "on_image_subtitle": fusion_meta.get("on_image_subtitle"),
         "reference_analysis_fallback_used": bool(fusion_meta.get("reference_analysis_fallback_used", True)),
         "ai_handles_copy": bool(fusion_meta.get("ai_handles_copy")),
+        "ai_receives_brand_assets": bool(fusion_meta.get("ai_receives_brand_assets")),
+        "brand_asset_roles": fusion_meta.get("brand_asset_roles") or [],
+        "brand_protection_mode": fusion_meta.get("brand_protection_mode") or "none",
+        "protected_brand_asset_ids": fusion_meta.get("protected_brand_asset_ids") or {},
         "preserve_product_pixels": fusion_meta["preserve_product_pixels"],
         "generated_image_contains_product": fusion_meta.get(
             "generated_image_contains_product",
             fusion_meta["mode"] in {"scene_with_product", "prebuilt_scene_image", "local_mock_composite", "image_edit_json_reference"},
         ),
-        "final_layout_engine": "pillow_template_overlay",
+        "final_layout_engine": (
+            "ai_scene_with_exact_brand_protection"
+            if fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
+            else "pillow_template_overlay"
+        ),
         "safe_zones": {
             "ai_top_logo": list(ai_safe_zones["top_logo"]),
             "ai_bottom_copy_qrcode": list(ai_safe_zones["bottom_copy_qrcode"]),
@@ -769,7 +821,7 @@ def draw_text_block(draw: ImageDraw.ImageDraw, title: str, subtitle: str, layout
     draw_fitted_text(draw, subtitle, layout["subtitle"], bold=False, shadow_alpha=132)
 
 
-def paste_logo(canvas: Image.Image, logo_path: Path, layout: dict[str, Any]) -> None:
+def paste_logo(canvas: Image.Image, logo_path: Path, layout: dict[str, Any], *, harmonized: bool = False) -> None:
     settings = layout["logo"]
     box = tuple(settings["box"])
     try:
@@ -779,18 +831,19 @@ def paste_logo(canvas: Image.Image, logo_path: Path, layout: dict[str, Any]) -> 
             x = box[0]
             y = box[1] + (box_height(box) - logo_image.height) // 2
             draw = ImageDraw.Draw(canvas)
-            plate = choose_logo_plate(logo_image)
-            draw.rounded_rectangle((x - 14, y - 10, x + logo_image.width + 14, y + logo_image.height + 10), radius=16, fill=plate)
+            plate_box = (x - 14, y - 10, x + logo_image.width + 14, y + logo_image.height + 10)
+            plate = choose_harmonized_plate(canvas, plate_box) if harmonized else choose_logo_plate(logo_image)
+            draw.rounded_rectangle(plate_box, radius=14 if harmonized else 16, fill=plate)
             shadow = Image.new("RGBA", logo_image.size, (0, 0, 0, 0))
-            shadow.putalpha(logo_image.getchannel("A").filter(ImageFilter.GaussianBlur(4)))
-            canvas.alpha_composite(shadow, (x + 2, y + 3))
+            shadow.putalpha(logo_image.getchannel("A").filter(ImageFilter.GaussianBlur(5 if harmonized else 4)))
+            canvas.alpha_composite(shadow, (x + 2, y + (4 if harmonized else 3)))
             canvas.alpha_composite(logo_image, (x, y))
     except Exception:
         draw = ImageDraw.Draw(canvas)
         draw.text((box[0], box[1]), "PUDOW", font=load_font(46, bold=True), fill="#FFFFFF")
 
 
-def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any]) -> None:
+def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any], *, harmonized: bool = False) -> None:
     settings = layout["qrcode"]
     card_box = tuple(settings["card_box"])
     image_box = tuple(settings["image_box"])
@@ -803,7 +856,13 @@ def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any])
             qrcode_square = Image.new("RGBA", (target_size, target_size), "#FFFFFF")
             qrcode_square.alpha_composite(qrcode, ((target_size - qrcode.width) // 2, (target_size - qrcode.height) // 2))
             draw = ImageDraw.Draw(canvas)
-            draw.rounded_rectangle(card_box, radius=24, fill="#FFFFFF", outline=(15, 23, 42, 42), width=2)
+            if harmonized:
+                shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+                shadow_draw = ImageDraw.Draw(shadow)
+                shadow_draw.rounded_rectangle(card_box, radius=24, fill=(0, 0, 0, 62))
+                canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)))
+            outline = (255, 255, 255, 82) if harmonized else (15, 23, 42, 42)
+            draw.rounded_rectangle(card_box, radius=24, fill="#FFFFFF", outline=outline, width=2)
             image_x = image_box[0] + (box_width(image_box) - target_size) // 2
             image_y = image_box[1] + (box_height(image_box) - target_size) // 2
             canvas.alpha_composite(qrcode_square, (image_x, image_y))
@@ -813,18 +872,20 @@ def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any])
         pass
 
 
-def paste_bottom_bar(canvas: Image.Image, bottom_bar_path: Path, layout: dict[str, Any]) -> None:
+def paste_bottom_bar(canvas: Image.Image, bottom_bar_path: Path, layout: dict[str, Any], *, harmonized: bool = False) -> None:
     box = tuple(layout["bottom_bar"]["box"])
     size = (box_width(box), box_height(box))
     draw = ImageDraw.Draw(canvas)
     try:
         with Image.open(bottom_bar_path) as bottom_image:
             bottom = ImageOps.fit(bottom_image.convert("RGB"), size, method=Image.Resampling.LANCZOS).convert("RGBA")
+            if harmonized:
+                bottom = apply_top_alpha_feather(bottom, feather_height=34)
             canvas.alpha_composite(bottom, (box[0], box[1]))
     except Exception:
         draw.rectangle(box, fill="#0F766E")
         draw.text((box[0] + 72, box[1] + 48), "PUDOW", font=load_font(42, bold=True), fill="#FFFFFF")
-    draw.line((box[0], box[1], box[2], box[1]), fill=(255, 255, 255, 56), width=2)
+    draw.line((box[0], box[1], box[2], box[1]), fill=(255, 255, 255, 34 if harmonized else 56), width=2)
 
 
 def draw_footer_text(
@@ -925,6 +986,30 @@ def choose_logo_plate(logo_image: Image.Image) -> tuple[int, int, int, int]:
     if brightness > 190:
         return (0, 0, 0, 96)
     return (255, 255, 255, 204)
+
+
+def choose_harmonized_plate(canvas: Image.Image, rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    left = max(0, min(canvas.width - 1, int(rect[0])))
+    top = max(0, min(canvas.height - 1, int(rect[1])))
+    right = max(left + 1, min(canvas.width, int(rect[2])))
+    bottom = max(top + 1, min(canvas.height, int(rect[3])))
+    sample = canvas.convert("RGB").crop((left, top, right, bottom)).resize((1, 1), Image.Resampling.LANCZOS).getpixel((0, 0))
+    brightness = (sample[0] * 0.299) + (sample[1] * 0.587) + (sample[2] * 0.114)
+    if brightness < 146:
+        return (255, 255, 255, 156)
+    return (0, 0, 0, 82)
+
+
+def apply_top_alpha_feather(image: Image.Image, *, feather_height: int) -> Image.Image:
+    result = image.copy()
+    alpha = Image.new("L", result.size, 255)
+    draw = ImageDraw.Draw(alpha)
+    limit = min(max(feather_height, 0), result.height)
+    for y in range(limit):
+        value = int(255 * (y / max(limit - 1, 1)))
+        draw.line((0, y, result.width, y), fill=value)
+    result.putalpha(alpha)
+    return result
 
 
 def draw_centered_text(

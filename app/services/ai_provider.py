@@ -87,6 +87,13 @@ class ScenePromptResult:
 
 
 @dataclass
+class BrandReferenceAsset:
+    role: str
+    asset_id: str
+    path: Path
+
+
+@dataclass
 class SceneFusionResult:
     image_path: Path
     prompt: str
@@ -105,6 +112,10 @@ class SceneFusionResult:
     node_style_prompt: str = ""
     final_image_prompt: str = ""
     reference_analysis_fallback_used: bool = True
+    ai_receives_brand_assets: bool = False
+    brand_asset_roles: list[str] = field(default_factory=list)
+    protected_brand_asset_ids: dict[str, str] = field(default_factory=dict)
+    brand_protection_mode: str = "none"
 
 
 @dataclass
@@ -160,6 +171,7 @@ class AiProvider:
         copy: dict[str, Any] | None = None,
         canvas_size: tuple[int, int] = DEFAULT_CANVAS_SIZE,
         safe_zones: dict[str, tuple[int, int, int, int]] | None = None,
+        brand_reference_assets: list[BrandReferenceAsset] | None = None,
     ) -> SceneFusionResult:
         try:
             prompt_result = self.generate_scene_prompt(node=node, product=product, payload=payload, copy=copy)
@@ -179,6 +191,7 @@ class AiProvider:
                 canvas_size=canvas_size,
                 safe_zones=safe_zones or default_safe_zones(),
                 prompt_result=prompt_result,
+                brand_reference_assets=brand_reference_assets or [],
             ),
             timeout_seconds=self.settings.image_timeout_seconds,
         )
@@ -266,6 +279,7 @@ class AiProvider:
         canvas_size: tuple[int, int],
         safe_zones: dict[str, tuple[int, int, int, int]],
         prompt_result: ScenePromptResult,
+        brand_reference_assets: list[BrandReferenceAsset],
     ) -> SceneFusionResult:
         raise NotImplementedError
 
@@ -344,6 +358,7 @@ class MockBridgeAiProvider(AiProvider):
         canvas_size: tuple[int, int],
         safe_zones: dict[str, tuple[int, int, int, int]],
         prompt_result: ScenePromptResult,
+        brand_reference_assets: list[BrandReferenceAsset],
     ) -> SceneFusionResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         image_path = output_dir / "ai_scene_mock.png"
@@ -356,6 +371,7 @@ class MockBridgeAiProvider(AiProvider):
             safe_zones=safe_zones,
             on_image_title=prompt_result.on_image_title,
             on_image_subtitle=prompt_result.on_image_subtitle,
+            brand_reference_assets=brand_reference_assets,
         )
         return SceneFusionResult(
             image_path=image_path,
@@ -374,6 +390,10 @@ class MockBridgeAiProvider(AiProvider):
             node_style_prompt=prompt_result.node_style_prompt,
             final_image_prompt=prompt_result.final_image_prompt or prompt_result.positive_prompt,
             reference_analysis_fallback_used=prompt_result.reference_analysis_fallback_used,
+            ai_receives_brand_assets=bool(brand_reference_assets),
+            brand_asset_roles=[asset.role for asset in brand_reference_assets],
+            protected_brand_asset_ids=brand_asset_id_map(brand_reference_assets),
+            brand_protection_mode="ai_fusion_with_exact_final_overlay" if brand_reference_assets else "none",
         )
 
     def _generate_background_only(
@@ -558,35 +578,51 @@ class OpenAICompatibleAiProvider(AiProvider):
         canvas_size: tuple[int, int],
         safe_zones: dict[str, tuple[int, int, int, int]],
         prompt_result: ScenePromptResult,
+        brand_reference_assets: list[BrandReferenceAsset],
     ) -> SceneFusionResult:
         if not self.settings.has_image_credentials:
             raise AiProviderError("图片生成 Key 未配置")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         image_path = output_dir / "ai_scene.png"
+        prepared_brand_assets = prepare_brand_reference_images(brand_reference_assets, output_dir)
+        brand_roles = [asset.role for asset in prepared_brand_assets]
+        negative_prompt = (
+            relax_negative_prompt_for_brand_assets(prompt_result.negative_prompt)
+            if prepared_brand_assets
+            else prompt_result.negative_prompt
+        )
         prompt = append_image_constraints(
             prompt=prompt_result.positive_prompt,
-            negative_prompt=prompt_result.negative_prompt,
+            negative_prompt=negative_prompt,
             canvas_size=canvas_size,
             safe_zones=safe_zones,
+            brand_asset_roles=brand_roles,
         )
+        if prepared_brand_assets:
+            prompt = f"{prompt}\n\nFinal brand reference instruction: {build_brand_fusion_instruction(brand_roles)}"
         if self.settings.image_fusion_request_mode == "json_base64":
             body = {
                 "model": self.settings.image_model,
                 "mode": "image_edit",
                 "size": self.settings.image_output_size,
                 "prompt": prompt,
-                "negative_prompt": prompt_result.negative_prompt,
+                "negative_prompt": negative_prompt,
                 "product_image_b64": encode_image_base64(transparent_product_png),
+                "brand_assets_b64": brand_reference_payload(prepared_brand_assets),
                 "canvas_size": list(canvas_size),
                 "safe_zones": normalize_safe_zones(safe_zones),
                 "constraints": {
                     "preserve_product_pixels": True,
+                    "preserve_reference_brand_assets": bool(prepared_brand_assets),
+                    "integrate_reference_brand_assets": bool(prepared_brand_assets),
                     "no_text": False,
                     "chinese_text_only": True,
                     "allow_artistic_chinese_title": True,
-                    "no_logo": True,
-                    "no_qrcode": True,
+                    "no_extra_logo": True,
+                    "no_extra_qrcode": True,
+                    "no_distorted_brand_mark": True,
+                    "no_unreadable_qrcode": True,
                     "no_watermark": True,
                 },
                 "metadata": {
@@ -596,6 +632,8 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "on_image_title": prompt_result.on_image_title,
                     "on_image_subtitle": prompt_result.on_image_subtitle,
                     "reference_prompt_source": prompt_result.reference_prompt_source,
+                    "reference_image_roles": ["product", *brand_roles],
+                    "brand_protection_mode": "ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
                 },
             }
             if self.settings.image_response_format:
@@ -620,8 +658,10 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "quality": self.settings.image_quality,
                     "output_format": self.settings.image_output_format,
                     "response_format": self.settings.image_response_format,
+                    "reference_image_roles": json.dumps(["product", *brand_roles], ensure_ascii=False),
+                    "brand_protection_mode": "ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
                 },
-                image_files=[transparent_product_png],
+                image_files=[transparent_product_png, *[asset.path for asset in prepared_brand_assets]],
                 image_field=self.settings.image_file_field,
                 timeout_seconds=self.settings.image_timeout_seconds,
             )
@@ -629,7 +669,7 @@ class OpenAICompatibleAiProvider(AiProvider):
         return SceneFusionResult(
             image_path=image_path,
             prompt=prompt,
-            negative_prompt=prompt_result.negative_prompt,
+            negative_prompt=negative_prompt,
             provider="openai_compatible_image",
             model=self.settings.image_model,
             mode=f"image_edit_{self.settings.image_fusion_request_mode}",
@@ -643,6 +683,10 @@ class OpenAICompatibleAiProvider(AiProvider):
             node_style_prompt=prompt_result.node_style_prompt,
             final_image_prompt=prompt_result.final_image_prompt or prompt,
             reference_analysis_fallback_used=prompt_result.reference_analysis_fallback_used,
+            ai_receives_brand_assets=bool(prepared_brand_assets),
+            brand_asset_roles=brand_roles,
+            protected_brand_asset_ids=brand_asset_id_map(brand_reference_assets),
+            brand_protection_mode="ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
         )
 
     def _generate_background_only(
@@ -1130,6 +1174,7 @@ def create_mock_scene_with_product(
     safe_zones: dict[str, tuple[int, int, int, int]],
     on_image_title: str,
     on_image_subtitle: str,
+    brand_reference_assets: list[BrandReferenceAsset],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_image = create_mock_atmosphere_canvas(node=node, canvas_size=canvas_size)
@@ -1141,8 +1186,49 @@ def create_mock_scene_with_product(
         product_path=product_image_path,
         placement_zone=compute_product_zone(canvas_size=canvas_size, safe_zones=safe_zones),
     )
+    add_mock_brand_references(base_image, brand_reference_assets)
     add_depth_vignette(base_image)
     base_image.save(path, "PNG")
+
+
+def add_mock_brand_references(canvas: Image.Image, brand_reference_assets: list[BrandReferenceAsset]) -> None:
+    for asset in brand_reference_assets:
+        if asset.role == "logo":
+            paste_mock_reference(canvas, asset.path, (72, 78, 332, 166), max_size=(228, 82), plate_alpha=82)
+        elif asset.role == "bottom_bar":
+            paste_mock_reference(canvas, asset.path, (0, 1760, 1080, 1920), max_size=(1080, 160), plate_alpha=0)
+        elif asset.role == "qrcode":
+            paste_mock_reference(canvas, asset.path, (778, 1508, 1020, 1754), max_size=(208, 208), plate_alpha=210)
+
+
+def paste_mock_reference(
+    canvas: Image.Image,
+    source_path: Path,
+    box: tuple[int, int, int, int],
+    *,
+    max_size: tuple[int, int],
+    plate_alpha: int,
+) -> None:
+    try:
+        with Image.open(source_path) as source:
+            image = ImageOps.contain(source.convert("RGBA"), max_size, method=Image.Resampling.LANCZOS)
+    except Exception:
+        return
+    draw = ImageDraw.Draw(canvas)
+    x = box[0] + (box[2] - box[0] - image.width) // 2
+    y = box[1] + (box[3] - box[1] - image.height) // 2
+    if plate_alpha:
+        draw.rounded_rectangle(
+            (x - 16, y - 12, x + image.width + 16, y + image.height + 12),
+            radius=22,
+            fill=(255, 255, 255, plate_alpha),
+        )
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    shadow_tile = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    shadow_tile.putalpha(image.getchannel("A").filter(ImageFilter.GaussianBlur(6)))
+    shadow.alpha_composite(shadow_tile, (x + 3, y + 5))
+    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(3)))
+    canvas.alpha_composite(image, (x, y))
 
 
 def add_mock_art_text(
@@ -1299,6 +1385,94 @@ def add_depth_vignette(canvas: Image.Image) -> None:
     canvas.alpha_composite(vignette.filter(ImageFilter.GaussianBlur(30)))
 
 
+def prepare_brand_reference_images(
+    brand_reference_assets: list[BrandReferenceAsset],
+    output_dir: Path,
+) -> list[BrandReferenceAsset]:
+    if not brand_reference_assets:
+        return []
+    reference_dir = output_dir / "ai_references"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    prepared: list[BrandReferenceAsset] = []
+    for index, asset in enumerate(brand_reference_assets, start=1):
+        if not asset.path.exists() or not asset.path.is_file():
+            continue
+        role = sanitize_reference_role(asset.role)
+        output_path = reference_dir / f"{index:02d}_{role}.png"
+        try:
+            normalize_brand_reference_image(source_path=asset.path, output_path=output_path, role=role)
+        except Exception as exc:
+            logger.warning("Could not prepare brand reference %s: %s", asset.asset_id, exc)
+            continue
+        prepared.append(BrandReferenceAsset(role=role, asset_id=asset.asset_id, path=output_path))
+    return prepared
+
+
+def normalize_brand_reference_image(*, source_path: Path, output_path: Path, role: str) -> None:
+    with Image.open(source_path) as source:
+        image = source.convert("RGBA")
+        if role == "bottom_bar":
+            max_size = (1080, 320)
+            background = (255, 255, 255, 0)
+        elif role == "qrcode":
+            max_size = (360, 360)
+            background = (255, 255, 255, 255)
+        else:
+            max_size = (640, 260)
+            background = (255, 255, 255, 0)
+
+        image = ImageOps.contain(image, max_size, method=Image.Resampling.LANCZOS)
+        if role == "qrcode":
+            side = max(image.width, image.height) + 48
+            canvas = Image.new("RGBA", (side, side), background)
+        else:
+            canvas = Image.new("RGBA", max_size, background)
+        x = (canvas.width - image.width) // 2
+        y = (canvas.height - image.height) // 2
+        canvas.alpha_composite(image, (x, y))
+        canvas.save(output_path, "PNG")
+
+
+def sanitize_reference_role(role: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_]+", "_", role.strip().lower()).strip("_")
+    return clean or "brand_asset"
+
+
+def brand_reference_payload(brand_reference_assets: list[BrandReferenceAsset]) -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    for asset in brand_reference_assets:
+        encoded = encode_image_base64(asset.path)
+        if not encoded:
+            continue
+        payload.append({"role": asset.role, "asset_id": asset.asset_id, "image_b64": encoded})
+    return payload
+
+
+def brand_asset_id_map(brand_reference_assets: list[BrandReferenceAsset]) -> dict[str, str]:
+    return {asset.role: asset.asset_id for asset in brand_reference_assets if asset.role and asset.asset_id}
+
+
+def relax_negative_prompt_for_brand_assets(negative_prompt: str) -> str:
+    relaxed: list[str] = []
+    for item in re.split(r"[锛?銆傦紱;\n]+", negative_prompt or ""):
+        clean = item.strip()
+        if not clean:
+            continue
+        lowered = clean.lower()
+        if "logo" in lowered or "qrcode" in lowered or "qr code" in lowered or "浜岀淮" in clean:
+            continue
+        relaxed.append(clean)
+    relaxed.extend(
+        [
+            "no extra non-reference logos",
+            "no distorted brand marks",
+            "no invented QR codes",
+            "no unreadable QR code when a QR reference is supplied",
+        ]
+    )
+    return combine_negative_prompts(*relaxed)
+
+
 def post_openai_compatible_json(
     *,
     base_url: str,
@@ -1427,8 +1601,12 @@ def append_image_constraints(
     negative_prompt: str,
     canvas_size: tuple[int, int],
     safe_zones: dict[str, tuple[int, int, int, int]],
+    brand_asset_roles: list[str] | None = None,
 ) -> str:
     zones = normalize_safe_zones(safe_zones)
+    brand_instruction = build_brand_fusion_instruction(brand_asset_roles or [])
+    if brand_instruction:
+        prompt = f"{prompt}\n\n{brand_instruction}"
     return (
         f"{prompt}\n\n"
         f"画布比例：竖版 {canvas_size[0]}x{canvas_size[1]}。"
@@ -1438,6 +1616,22 @@ def append_image_constraints(
         f"顶部和底部预留海报排版安全区：{json.dumps(zones, ensure_ascii=False)}。"
         "画面允许生成清晰中文艺术字主标题和中文副文案，但不要生成英文、乱码、错别字、额外 Logo、二维码、水印、价格标签或促销标签。"
         f"负向约束：{negative_prompt}"
+    )
+
+
+def build_brand_fusion_instruction(brand_asset_roles: list[str]) -> str:
+    if not brand_asset_roles:
+        return (
+            "No brand reference image is supplied except the product. Keep clean poster zones for later exact brand placement. "
+            "Do not invent logos, QR codes, bottom strips, watermarks, or price tags."
+        )
+    roles = ", ".join(brand_asset_roles)
+    return (
+        f"Additional reference images are supplied for these brand roles: {roles}. "
+        "Use only the supplied brand references, integrate them into the poster lighting, color, and layout, "
+        "and keep their intended zones consistent with the safe-zone JSON. "
+        "Logo and bottom strip may be visually blended with the scene; QR code must stay as a crisp high-contrast scan area. "
+        "Do not invent extra logos, extra QR codes, fake brand marks, watermarks, buttons, or price tags."
     )
 
 
