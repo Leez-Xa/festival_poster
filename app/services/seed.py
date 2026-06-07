@@ -16,7 +16,20 @@ MAX_INDEX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_INDEX_IMAGE_PIXELS = 50_000_000
 MAX_INDEX_IMAGE_EDGE = 12_000
 PRODUCT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+BRAND_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 DETAIL_IMAGE_TERMS = ("详情页", "详情图", "页面", "长图", "易拉宝", "折页", "看稿", "._")
+MATERIAL_LOGO_DIRS = (
+    ROOT_DIR / "素材" / "朴道logo",
+    ROOT_DIR / "素材" / "asset" / "朴道logo",
+    ROOT_DIR / "素材" / "asset" / "素材整理" / "朴道logo",
+)
+MATERIAL_QRCODE_DIRS = (
+    ROOT_DIR / "素材" / "二维码汇总",
+)
+MATERIAL_BOTTOM_BAR_DIRS = (
+    ROOT_DIR / "素材" / "节日节气海报",
+    ROOT_DIR / "素材" / "asset" / "素材整理" / "节日节气海报",
+)
 
 
 def initialize_seed_assets() -> None:
@@ -69,6 +82,8 @@ def seed_brand_assets() -> None:
             )
         )
 
+    seed_material_brand_assets()
+
     for item in BACKGROUND_SOURCES:
         target = SYSTEM_DIR / item["file_name"]
         copy_or_create_placeholder(
@@ -88,6 +103,120 @@ def seed_brand_assets() -> None:
                 tags=item.get("tags", []),
             )
         )
+
+
+def seed_material_brand_assets() -> None:
+    seed_material_asset_dirs(
+        asset_type="logo",
+        directories=MATERIAL_LOGO_DIRS,
+        tags=["Logo", "素材库"],
+    )
+    seed_material_asset_dirs(
+        asset_type="qrcode",
+        directories=MATERIAL_QRCODE_DIRS,
+        tags=["二维码", "素材库"],
+    )
+    seed_material_asset_dirs(
+        asset_type="bottom_bar",
+        directories=MATERIAL_BOTTOM_BAR_DIRS,
+        tags=["底部宣传条", "素材库"],
+        name_filter=lambda path: "底部" in path.stem,
+        recursive=True,
+    )
+
+
+def seed_material_asset_dirs(
+    *,
+    asset_type: str,
+    directories: tuple[Path, ...],
+    tags: list[str],
+    name_filter: Any | None = None,
+    recursive: bool = False,
+) -> None:
+    for image_path in iter_unique_material_images(directories, name_filter=name_filter, recursive=recursive):
+        asset_id = material_asset_id(asset_type, image_path)
+        upsert_asset(
+            serialize_material_system_asset(
+                asset_id=asset_id,
+                asset_type=asset_type,
+                name=image_path.stem,
+                file_path=image_path,
+                tags=tags,
+            )
+        )
+
+
+def iter_unique_material_images(
+    directories: tuple[Path, ...],
+    *,
+    name_filter: Any | None = None,
+    recursive: bool = False,
+) -> list[Path]:
+    seen_names: set[str] = set()
+    images: list[Path] = []
+    for directory in directories:
+        if not directory.exists() or not directory.is_dir():
+            continue
+        candidates = directory.rglob("*") if recursive else directory.iterdir()
+        for path in sorted(candidates, key=lambda item: item.name):
+            if not is_material_brand_image(path):
+                continue
+            if name_filter and not name_filter(path):
+                continue
+            name_key = path.name.casefold()
+            if name_key in seen_names:
+                continue
+            seen_names.add(name_key)
+            images.append(path)
+    return images
+
+
+def is_material_brand_image(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.suffix.lower() not in BRAND_IMAGE_SUFFIXES:
+        return False
+    if path.name.startswith("._") or path.name == ".DS_Store":
+        return False
+    return True
+
+
+def serialize_material_system_asset(
+    *,
+    asset_id: str,
+    asset_type: str,
+    name: str,
+    file_path: Path,
+    tags: list[str],
+) -> dict[str, Any]:
+    width, height, mime_type = image_metadata(file_path)
+    stamp = now_iso()
+    return {
+        "id": asset_id,
+        "asset_type": asset_type,
+        "name": name,
+        "file_name": file_path.name,
+        "public_url": f"/api/v1/assets/{asset_id}/file",
+        "mime_type": mime_type,
+        "size_bytes": file_path.stat().st_size if file_path.exists() else 0,
+        "width": width,
+        "height": height,
+        "tags": tags,
+        "source": "system",
+        "product_id": "",
+        "created_at": stamp,
+        "updated_at": stamp,
+        "_file_path": str(file_path),
+    }
+
+
+def material_asset_id(asset_type: str, path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(ROOT_DIR.resolve())
+    except ValueError:
+        relative = path.resolve()
+    digest = hashlib.sha1(str(relative).encode("utf-8")).hexdigest()[:16]
+    return f"asset_{asset_type}_{digest}"
 
 
 def seed_product_material_assets() -> None:

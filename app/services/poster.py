@@ -33,7 +33,7 @@ _TASK_LOCKS_GUARD = threading.Lock()
 def create_task(payload: PosterTaskCreate, background_tasks: BackgroundTasks) -> dict[str, str]:
     del background_tasks
 
-    find_node(payload.node_id)
+    resolve_node(payload)
     find_product(payload.product_id)
     if payload.template_id != "template_v1_vertical_standard":
         raise ApiError(
@@ -187,7 +187,7 @@ def prepare_task_copy(task_id: str) -> None:
     if not task:
         raise ApiError("NOT_FOUND", "Task not found", status_code=404, details={"task_id": task_id})
     payload = PosterTaskCreate(**task["request"])
-    node = find_node(payload.node_id)
+    node = resolve_node(payload)
     product = find_product(payload.product_id)
     copy_result, copy_source = generate_copy_or_fallback(node=node, product=product, payload=payload)
     compliance = check_copy(copy_result.title, copy_result.subtitle)
@@ -276,7 +276,7 @@ def compose_poster(
 
     payload = PosterTaskCreate(**task["request"])
     copy = copy_override or task["copy"]
-    node = find_node(payload.node_id)
+    node = resolve_node(payload)
     product = find_product(payload.product_id)
     resolved = task["resolved_asset_ids"]
     layout = get_template_layout(payload.template_id)
@@ -1014,6 +1014,66 @@ def generate_copy_or_fallback(
             ),
             "local_fallback",
         )
+
+
+def resolve_node(payload: PosterTaskCreate) -> dict[str, Any]:
+    is_custom_node = payload.node_id.startswith("custom_") or bool(payload.custom_node_name.strip())
+    if is_custom_node:
+        name = payload.custom_node_name.strip() or "自定义活动"
+        date = payload.custom_node_date.strip()
+        keywords = normalize_node_keywords(payload.custom_node_keywords) or [name, "健康饮水"]
+        if date and date not in keywords:
+            keywords.append(date)
+        colors = normalize_node_colors(payload.custom_node_colors) or ["#0F766E", "#DBEAFE"]
+        visual_direction = payload.custom_node_visual_direction.strip() or f"{name}主题，结合品牌健康饮水传播"
+        copy_direction = payload.custom_node_copy_direction.strip() or f"{name}主题传播、健康饮水"
+        return {
+            "id": payload.node_id or f"custom_{name}",
+            "name": name,
+            "type": payload.custom_node_type.strip() or "custom",
+            "date": date,
+            "keywords": keywords,
+            "colors": colors,
+            "copy_direction": copy_direction,
+            "visual_direction": visual_direction,
+        }
+
+    node = dict(find_node(payload.node_id))
+    keywords = normalize_node_keywords(payload.custom_node_keywords)
+    colors = normalize_node_colors(payload.custom_node_colors)
+    visual_direction = payload.custom_node_visual_direction.strip()
+    copy_direction = payload.custom_node_copy_direction.strip()
+    if keywords:
+        node["keywords"] = keywords
+    if colors:
+        node["colors"] = colors
+    if visual_direction:
+        node["visual_direction"] = visual_direction
+    if copy_direction:
+        node["copy_direction"] = copy_direction
+    return node
+
+
+def normalize_node_keywords(keywords: list[str]) -> list[str]:
+    normalized = []
+    for keyword in keywords:
+        value = str(keyword).strip()
+        if value and value not in normalized:
+            normalized.append(value[:24])
+    return normalized[:8]
+
+
+def normalize_node_colors(colors: list[str]) -> list[str]:
+    normalized = []
+    for color in colors:
+        value = str(color).strip()
+        if is_hex_color(value):
+            normalized.append(value)
+    return normalized[:4]
+
+
+def is_hex_color(value: str) -> bool:
+    return len(value) == 7 and value.startswith("#") and all(char in "0123456789abcdefABCDEF" for char in value[1:])
 
 
 def find_node(node_id: str) -> dict[str, Any]:

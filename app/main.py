@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import (
+    APP_ENV,
     API_PREFIX,
     API_ACCESS_TOKEN,
     API_ACCESS_TOKEN_REQUIRED,
     CORS_ALLOW_ORIGIN_REGEX,
     CORS_ORIGINS,
+    FRONTEND_DIR,
     GENERATED_DIR,
     ROOT_DIR,
     STORAGE_DIR,
@@ -113,6 +117,17 @@ async def get_marketing_nodes() -> dict[str, object]:
     return success_response({"items": MARKETING_NODES})
 
 
+@app.get(f"{API_PREFIX}/app-config")
+async def get_app_config() -> dict[str, object]:
+    return success_response(
+        {
+            "app_env": APP_ENV,
+            "demo_fallback_enabled": not get_ai_require_image_fusion(),
+            "api_base": API_PREFIX,
+        }
+    )
+
+
 @app.get(f"{API_PREFIX}/products")
 async def get_products() -> dict[str, object]:
     return success_response({"items": list_products()})
@@ -185,3 +200,12 @@ async def post_poster_task_rerender(
 @app.post(f"{API_PREFIX}/compliance/check")
 async def compliance_check(payload: ComplianceCheckRequest, _: None = Depends(require_api_access)) -> dict[str, object]:
     return success_response(check_copy_with_rewrite(payload.title, payload.subtitle))
+
+
+def get_ai_require_image_fusion() -> bool:
+    value = os.getenv("AI_REQUIRE_IMAGE_FUSION", "true").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+if FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

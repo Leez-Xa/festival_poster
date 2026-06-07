@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from datetime import datetime
 from io import BytesIO
@@ -30,7 +31,35 @@ def list_assets(
     product_id: str | None = None,
 ) -> list[dict[str, Any]]:
     assets = db_list_assets(asset_type=asset_type, source=source, product_id=product_id)
-    return [public_asset(asset) for asset in assets if is_public_asset_candidate(asset)]
+    return [public_asset(asset) for asset in dedupe_system_brand_assets(assets) if is_public_asset_candidate(asset)]
+
+
+def dedupe_system_brand_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for asset in assets:
+        key = system_brand_asset_key(asset)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(asset)
+    return deduped
+
+
+def system_brand_asset_key(asset: dict[str, Any]) -> str:
+    asset_type = asset.get("asset_type", "")
+    if asset.get("source") != "system" or asset_type not in {"logo", "qrcode", "bottom_bar"}:
+        return ""
+
+    name = str(asset.get("name") or asset.get("file_name") or "")
+    if asset_type == "bottom_bar" and name in {"默认底部宣传条", "底部宣传图"}:
+        return "bottom_bar:default"
+
+    normalized = re.sub(r"(?i)logo", "", name)
+    normalized = normalized.replace("二维码", "")
+    normalized = re.sub(r"[\s_\-—（）()【】\[\].。·]+", "", normalized).casefold()
+    return f"{asset_type}:{normalized}"
 
 
 def is_public_asset_candidate(asset: dict[str, Any]) -> bool:

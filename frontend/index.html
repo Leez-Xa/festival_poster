@@ -6,17 +6,20 @@
     <meta name="color-scheme" content="light" />
     <title>朴道节日海报AI员工</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./workbench.css?v=20260607-workbench3" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <span class="brand-mark" aria-hidden="true">P</span>
+          <span class="brand-mark" aria-label="PUDOW朴道Logo" role="img">
+            <img src="./assets/pudow-logo.png" alt="" />
+          </span>
           <div>
             <p class="eyebrow">朴道品牌物料工作台</p>
             <h1>节日海报生成</h1>
             <p class="top-subtitle">选节点、传素材、生成海报、合规下载，一条链路完成。</p>
+            <p class="runtime-badge" id="runtimeBadge" hidden></p>
           </div>
         </div>
         <nav class="top-actions" aria-label="主要入口" hidden>
@@ -74,7 +77,7 @@
           </ol>
         </section>
 
-        <section class="page-grid">
+        <section class="page-grid" aria-label="海报生成工作台">
           <aside class="side-panel" aria-label="当前选择">
             <h2>当前任务</h2>
             <dl class="summary-list">
@@ -119,8 +122,36 @@
               <div class="state-message" id="nodesMessage" hidden></div>
               <div class="node-grid" id="nodeGrid" aria-live="polite"></div>
 
+              <div class="node-customizer" id="nodeCustomizer" hidden>
+                <div class="section-title-row">
+                  <h3 id="nodeCustomizerTitle">节点偏好</h3>
+                </div>
+                <div class="form-grid two node-preference-grid">
+                  <label>
+                    <span>主题关键词</span>
+                    <input id="nodeThemeInput" type="text" maxlength="80" placeholder="例如：团圆、焕新、答谢" />
+                  </label>
+                  <label>
+                    <span>画面主题</span>
+                    <input id="nodeVisualInput" type="text" maxlength="100" placeholder="例如：红金喜庆、清爽科技、环保自然" />
+                  </label>
+                  <label class="color-field">
+                    <span>主色</span>
+                    <input id="nodePrimaryColorInput" type="color" value="#0F766E" />
+                  </label>
+                  <label class="color-field">
+                    <span>辅色</span>
+                    <input id="nodeSecondaryColorInput" type="color" value="#DBEAFE" />
+                  </label>
+                </div>
+                <p class="hint">选择任意节日或活动后，都可以在这里调整主题和颜色。</p>
+              </div>
+
               <div class="custom-node">
-                <h3>自定义节点入口</h3>
+                <div class="section-title-row">
+                  <h3>自定义节点检测</h3>
+                  <button class="ghost-button small" type="button" id="checkCustomNodeBtn">检测接口</button>
+                </div>
                 <div class="form-grid two">
                   <label>
                     <span>活动名称</span>
@@ -132,7 +163,9 @@
                   </label>
                 </div>
                 <button class="ghost-button" type="button" id="useCustomNodeBtn">使用自定义节点</button>
-                <p class="hint">自定义节点需要后端提供可提交的节点ID后才能进入生成。</p>
+                <div class="state-message" id="customNodeStatus">
+                  可先检测接口，填写活动名称后会使用临时自定义节点进入生成。
+                </div>
               </div>
 
               <div class="screen-actions">
@@ -196,7 +229,7 @@
                     <button class="ghost-button small" type="button" data-upload-trigger="logo">上传Logo</button>
                   </div>
                   <input class="system-upload" data-upload-input="logo" type="file" accept="image/*" hidden />
-                  <div class="choice-grid" id="logoGrid"></div>
+                  <div class="choice-grid asset-carousel" id="logoGrid"></div>
                 </section>
 
                 <section class="asset-section">
@@ -205,7 +238,7 @@
                     <button class="ghost-button small" type="button" data-upload-trigger="qrcode">上传二维码</button>
                   </div>
                   <input class="system-upload" data-upload-input="qrcode" type="file" accept="image/*" hidden />
-                  <div class="choice-grid" id="qrcodeGrid"></div>
+                  <div class="choice-grid asset-carousel" id="qrcodeGrid"></div>
                   <p class="hint">底部宣传条已含二维码时，默认不再单独叠加二维码。</p>
                 </section>
 
@@ -215,7 +248,7 @@
                     <button class="ghost-button small" type="button" data-upload-trigger="bottom_bar">上传底部条</button>
                   </div>
                   <input class="system-upload" data-upload-input="bottom_bar" type="file" accept="image/*" hidden />
-                  <div class="choice-grid" id="bottomBarGrid"></div>
+                  <div class="choice-grid asset-carousel bottom-bar-carousel" id="bottomBarGrid"></div>
                   <p class="hint" id="bottomBarHint">未选择时请使用系统默认底部条或上传自定义底部条。</p>
                 </section>
               </div>
@@ -262,13 +295,20 @@
                     <option value="暖色温馨">暖色温馨</option>
                     <option value="红金喜庆">红金喜庆</option>
                     <option value="极简高级">极简高级</option>
+                    <option value="自然清新">自然清新</option>
+                    <option value="商务稳重">商务稳重</option>
+                    <option value="东方雅致">东方雅致</option>
+                    <option value="轻快活力">轻快活力</option>
+                    <option value="国潮节庆">国潮节庆</option>
+                    <option value="高端质感">高端质感</option>
                   </select>
                 </label>
                 <label>
-                  <span>模板</span>
-                  <input id="templateInput" type="text" value="template_v1_vertical_standard" />
+                  <span>自定义风格</span>
+                  <input id="customStyleInput" type="text" maxlength="80" placeholder="例如：留白多、轻奢、有水纹质感" />
                 </label>
               </div>
+              <input id="templateInput" type="hidden" value="template_v1_vertical_standard" />
 
               <div class="copy-mode-group" role="radiogroup" aria-label="文案生成方式">
                 <label>
@@ -325,14 +365,9 @@
               </div>
 
               <div class="preview-grid">
-                <div class="poster-frame">
-                  <div class="poster-empty" id="posterEmpty">任务完成后显示海报</div>
-                  <img id="posterImage" alt="生成的节日海报预览" hidden />
-                </div>
-
                 <div class="preview-controls">
-                  <section hidden>
-                    <h3>后端结果</h3>
+                  <section>
+                    <h3>生成诊断</h3>
                     <dl class="result-list">
                       <div>
                         <dt>任务状态</dt>
@@ -347,7 +382,7 @@
                         <dd id="resultPosterUrl">等待后端返回</dd>
                       </div>
                       <div>
-                        <dt>AI融合方式</dt>
+                        <dt>生成方式</dt>
                         <dd id="resultFusion">等待后端返回</dd>
                       </div>
                       <div>
@@ -357,7 +392,7 @@
                     </dl>
                   </section>
 
-                  <section hidden>
+                  <section>
                     <h3>后端文案</h3>
                     <div class="form-grid one">
                       <label>
@@ -392,7 +427,7 @@
                     <p class="hint">可按发布语气微调文案，修改后会重新做合规检查；未通过时下载会保持禁用。</p>
                   </section>
 
-                  <section hidden>
+                  <section>
                     <div class="section-title-row">
                       <h3>合规检查</h3>
                       <button class="ghost-button small" type="button" id="runComplianceBtn">重新检查</button>
@@ -428,6 +463,21 @@
               </div>
             </section>
           </div>
+
+          <aside class="poster-rail" aria-label="海报输出预览">
+            <div class="poster-rail-header">
+              <div>
+                <p class="eyebrow">输出预览</p>
+                <h2>发布海报</h2>
+              </div>
+              <span>JPG</span>
+            </div>
+            <div class="poster-frame">
+              <div class="poster-empty" id="posterEmpty">任务完成后显示海报</div>
+              <img id="posterImage" alt="生成的节日海报预览" hidden />
+            </div>
+            <p class="poster-rail-meta">标准竖版 1080 × 1920</p>
+          </aside>
         </section>
       </main>
     </div>
@@ -450,6 +500,6 @@
       </button>
     </template>
 
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=20260607-workbench3" defer></script>
   </body>
 </html>

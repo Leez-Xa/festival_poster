@@ -6,13 +6,29 @@
 选择营销节点 -> 选择系统产品图/上传产品图/上传整张场景图 -> 创建任务 -> 查询任务 -> 返回 JPG -> 前端预览/下载
 ```
 
-后端使用 FastAPI，前端是静态页面，数据库使用项目内 SQLite：
+后端使用 FastAPI，并直接托管前端页面；数据库使用项目内 SQLite：
 
 ```text
 storage/festival_poster.sqlite3
 ```
 
 产品资料素材只做只读索引，不移动、不覆盖原素材文件。
+
+## 一键本地演示（推荐）
+
+双击项目根目录里的：
+
+```text
+start_demo.bat
+```
+
+它会自动创建或复用 `.venv`、安装依赖、以演示 fallback 模式启动服务，并打开：
+
+```text
+http://127.0.0.1:8000/
+```
+
+这个入口适合答辩备用演示。页面会明确标注演示 fallback，不会冒充真实 AI 生图。
 
 ## 你在 Windows 上能不能运行
 
@@ -54,9 +70,9 @@ py -3 -m venv .venv
 
 不需要手动创建数据库。后端启动时会自动初始化 `storage/`、SQLite 表和素材索引。
 
-## 启动后端
+## 手动启动单入口应用
 
-开第一个 CMD 窗口：
+如果不使用 `start_demo.bat`，打开一个 CMD 窗口：
 
 ```cmd
 cd /d D:\Codex_Projects\festival_poster
@@ -75,36 +91,19 @@ Uvicorn running on http://127.0.0.1:8000
 curl http://127.0.0.1:8000/health
 ```
 
-接口前缀：
+浏览器打开：
+
+```text
+http://127.0.0.1:8000/
+```
+
+接口前缀仍然是：
 
 ```text
 http://127.0.0.1:8000/api/v1
 ```
 
-## 启动前端
-
-开第二个 CMD 窗口：
-
-```cmd
-cd /d D:\Codex_Projects\festival_poster
-.\.venv\Scripts\python.exe -m http.server 5173 --bind 127.0.0.1 --directory frontend
-```
-
-然后浏览器打开：
-
-```text
-http://127.0.0.1:5173
-```
-
-页面右上角 `API地址` 应该是：
-
-```text
-http://127.0.0.1:8000/api/v1
-```
-
-如果不是，点 `恢复默认`，或手动填入上面的地址。
-
-如果服务器 `.env` 设置了 `API_ACCESS_TOKEN`，还需要在页面右上角 `访问令牌` 输入框填写同一个值；本地未设置时可以留空。访问令牌只保存在浏览器本地，不会写入项目文件。
+普通用户不需要填写 API 地址。
 
 ## 正常使用流程
 
@@ -134,23 +133,13 @@ http://127.0.0.1:8000/api/v1
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 18083 --reload
 ```
 
-前端页面右上角 API 地址也要改成：
-
-```text
-http://127.0.0.1:18083/api/v1
-```
-
-如果前端 `5173` 被占用，可以换成 `5174`：
-
-```cmd
-.\.venv\Scripts\python.exe -m http.server 5174 --bind 127.0.0.1 --directory frontend
-```
-
 然后打开：
 
 ```text
-http://127.0.0.1:5174
+http://127.0.0.1:18083/
 ```
+
+FastAPI 会直接托管前端，同源 API 自动走 `/api/v1`，普通用户不需要手动改 API 地址。
 
 ## 常用检查命令
 
@@ -194,6 +183,14 @@ set SMOKE_TEST_PORT=18084
 ```
 
 如果只是检查服务是否启动，不要跑这个脚本，只跑 `/health` 即可。
+
+答辩前完整可复现检查：
+
+```cmd
+.\.venv\Scripts\python.exe scripts\demo_check.py
+```
+
+它会临时启动单入口应用，验证 health、节点、产品、Logo、底部条、上传、任务生成、JPG 访问、二维码为空时不叠加、SQLite 不公开。
 
 ## AI 中转站配置
 
@@ -289,8 +286,8 @@ docs/aliyun_deploy.md        阿里云 ECS 部署说明
 - Ubuntu 22.04 或 24.04
 - Python venv
 - systemd 托管后端
-- Nginx 托管前端静态文件
-- Nginx 反向代理 `/api/v1` 和 `/storage`
+- FastAPI 单入口托管前端和 `/api/v1`
+- Nginx 对整站启用共享密码并反向代理到 FastAPI
 - `storage/` 作为持久化目录
 
 详细步骤见：
@@ -304,4 +301,5 @@ docs/aliyun_deploy.md
 - `.env` 只放服务器本地。
 - 不要清空 `storage/`。
 - 生产 CORS 收紧到正式域名或服务器 IP。
+- 云端演示默认使用 Nginx Basic Auth 共享密码，不把密码写进代码或 `.env.example`。
 - 配 HTTPS 后再正式对外使用。

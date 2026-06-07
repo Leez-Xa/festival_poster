@@ -14,10 +14,7 @@ const TASK_STEP_LABELS = {
 };
 const API_BASE_FALLBACK = (() => {
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
-  if (isHttpPage && location.hostname && !["localhost", "127.0.0.1"].includes(location.hostname)) {
-    return `${location.origin}/api/v1`;
-  }
-  if (isHttpPage && /:8000$/.test(location.origin)) {
+  if (isHttpPage && !/:5173$/.test(location.origin)) {
     return `${location.origin}/api/v1`;
   }
   return "http://127.0.0.1:8000/api/v1";
@@ -27,9 +24,15 @@ const state = {
   currentScreen: "nodes",
   apiBase: API_BASE_FALLBACK,
   apiToken: localStorage.getItem("festivalPoster.apiToken") || "",
+  appConfig: {
+    app_env: "production",
+    demo_fallback_enabled: false,
+    api_base: "/api/v1",
+  },
   nodes: [],
   selectedNode: null,
   customNodeDraft: null,
+  nodePreferences: {},
   products: [],
   selectedProductId: "",
   sourceMode: "system_product",
@@ -67,15 +70,24 @@ const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
   apiTokenInput: document.querySelector("#apiTokenInput"),
   resetApiBaseBtn: document.querySelector("#resetApiBaseBtn"),
+  runtimeBadge: document.querySelector("#runtimeBadge"),
   stepper: document.querySelector("#stepper"),
   screens: [...document.querySelectorAll(".screen")],
   nodeGrid: document.querySelector("#nodeGrid"),
   nodesMessage: document.querySelector("#nodesMessage"),
   reloadNodesBtn: document.querySelector("#reloadNodesBtn"),
   goAssetsBtn: document.querySelector("#goAssetsBtn"),
+  nodeCustomizer: document.querySelector("#nodeCustomizer"),
+  nodeCustomizerTitle: document.querySelector("#nodeCustomizerTitle"),
+  nodeThemeInput: document.querySelector("#nodeThemeInput"),
+  nodeVisualInput: document.querySelector("#nodeVisualInput"),
+  nodePrimaryColorInput: document.querySelector("#nodePrimaryColorInput"),
+  nodeSecondaryColorInput: document.querySelector("#nodeSecondaryColorInput"),
   customNodeName: document.querySelector("#customNodeName"),
   customNodeDate: document.querySelector("#customNodeDate"),
+  checkCustomNodeBtn: document.querySelector("#checkCustomNodeBtn"),
   useCustomNodeBtn: document.querySelector("#useCustomNodeBtn"),
+  customNodeStatus: document.querySelector("#customNodeStatus"),
   dropZone: document.querySelector("#dropZone"),
   assetProductSelect: document.querySelector("#assetProductSelect"),
   sourceModeInputs: [...document.querySelectorAll('input[name="sourceMode"]')],
@@ -99,6 +111,7 @@ const els = {
   productSelect: document.querySelector("#productSelect"),
   copyDirectionSelect: document.querySelector("#copyDirectionSelect"),
   styleSelect: document.querySelector("#styleSelect"),
+  customStyleInput: document.querySelector("#customStyleInput"),
   templateInput: document.querySelector("#templateInput"),
   copyModeInputs: [...document.querySelectorAll('input[name="copyMode"]')],
   titlePreferenceLabel: document.querySelector("#titlePreferenceLabel"),
@@ -112,6 +125,7 @@ const els = {
   progressBar: document.querySelector("#progressBar"),
   pollingStatus: document.querySelector("#pollingStatus"),
   pollingStep: document.querySelector("#pollingStep"),
+  posterFrame: document.querySelector(".poster-frame"),
   posterEmpty: document.querySelector("#posterEmpty"),
   posterImage: document.querySelector("#posterImage"),
   resultTaskStatus: document.querySelector("#resultTaskStatus"),
@@ -259,8 +273,53 @@ function showMessage(el, message, tone = "") {
   el.className = `state-message ${tone}`.trim();
 }
 
+function renderRuntimeBadge() {
+  if (!els.runtimeBadge) return;
+  const isDemo = state.appConfig.app_env === "demo" || state.appConfig.demo_fallback_enabled;
+  els.runtimeBadge.hidden = false;
+  els.runtimeBadge.className = `runtime-badge ${isDemo ? "demo" : "production"}`;
+  els.runtimeBadge.textContent = isDemo
+    ? "演示模式：用于本地流程验收"
+    : "真实生图：产品图进入图片编辑融合，失败按当前后端配置处理";
+}
+
+async function loadAppConfig() {
+  try {
+    const data = await request("/app-config");
+    state.appConfig = {
+      ...state.appConfig,
+      ...data,
+    };
+  } catch (error) {
+    state.appConfig = {
+      ...state.appConfig,
+      app_env: "local",
+      demo_fallback_enabled: false,
+    };
+    addProtocolIssue(`/app-config 读取失败：${error.code || "NETWORK_ERROR"} ${error.message || ""}`.trim());
+  }
+  renderRuntimeBadge();
+}
+
+function taskUsesStableFallback(task = state.activeTask) {
+  const fusion = task?.fusion || {};
+  const fallback = fusion.fallback || {};
+  return Boolean(
+    state.appConfig.demo_fallback_enabled ||
+      fallback.used ||
+      fusion.provider === "mock_image" ||
+      fusion.provider === "local_fallback" ||
+      fusion.mode === "local_mock_composite"
+  );
+}
+
+function taskUsesDemoFallback(task = state.activeTask) {
+  return taskUsesStableFallback(task);
+}
+
 function setScreen(screen) {
   state.currentScreen = screen;
+  document.body.dataset.screen = screen;
   els.screens.forEach((el) => {
     el.classList.toggle("active", el.dataset.screen === screen);
   });
@@ -272,6 +331,11 @@ function setScreen(screen) {
     const activeIndex = order.indexOf(screen);
     item.classList.toggle("active", itemStep === screen);
     item.classList.toggle("done", activeIndex > itemIndex && activeIndex !== -1);
+    if (itemStep === screen) {
+      item.setAttribute("aria-current", "step");
+    } else {
+      item.removeAttribute("aria-current");
+    }
   });
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -301,7 +365,7 @@ function renderSummary() {
     els.summaryTask.textContent = `${statusLabel(state.activeTask.status)}${state.activeTask.task_id ? ` · ${state.activeTask.task_id}` : ""}`;
   }
 
-  els.goAssetsBtn.disabled = !state.selectedNode || state.selectedNode.isCustom;
+  els.goAssetsBtn.disabled = !state.selectedNode;
   els.goConfigBtn.disabled = !canGoConfig();
   els.createTaskBtn.disabled = !canCreateTask();
   els.downloadBtn.disabled = !canDownload();
@@ -312,6 +376,8 @@ function typeLabel(type) {
     solar_term: "节气",
     festival: "节日",
     ecommerce: "电商活动",
+    promotion: "促销活动",
+    campaign: "主题活动",
     company_event: "企业活动",
     custom: "自定义",
   };
@@ -345,7 +411,6 @@ function canCreateTask() {
   return (
     !taskRunning &&
     Boolean(state.selectedNode) &&
-    !state.selectedNode?.isCustom &&
     Boolean(state.selectedProductId) &&
     canGoConfig()
   );
@@ -370,6 +435,94 @@ function sourceSelectionSummary() {
     return state.productAssets.length ? `系统产品图 ${state.productAssets.length} 张` : "系统产品图未选";
   }
   return state.productAssets.length ? `上传产品图 ${state.productAssets.length} 张` : "上传产品图未选";
+}
+
+function selectedNodeKey(node = state.selectedNode) {
+  return node?.id || "";
+}
+
+function colorOrDefault(value, fallback) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || "")) ? value : fallback;
+}
+
+function splitPreferenceKeywords(value) {
+  return String(value || "")
+    .split(/[，,、/|\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function defaultNodePreference(node) {
+  const colors = Array.isArray(node?.colors) ? node.colors : [];
+  const keywords = Array.isArray(node?.keywords) ? node.keywords : [];
+  return {
+    theme: keywords.join("、"),
+    visualDirection: node?.visual_direction || node?.copy_direction || "",
+    primaryColor: colorOrDefault(colors[0], "#0F766E"),
+    secondaryColor: colorOrDefault(colors[1], "#DBEAFE"),
+  };
+}
+
+function getNodePreference(node = state.selectedNode) {
+  const key = selectedNodeKey(node);
+  return {
+    ...defaultNodePreference(node),
+    ...(key ? state.nodePreferences[key] : {}),
+  };
+}
+
+function setNodePreferenceInputs(preference) {
+  els.nodeThemeInput.value = preference.theme || "";
+  els.nodeVisualInput.value = preference.visualDirection || "";
+  els.nodePrimaryColorInput.value = colorOrDefault(preference.primaryColor, "#0F766E");
+  els.nodeSecondaryColorInput.value = colorOrDefault(preference.secondaryColor, "#DBEAFE");
+}
+
+function readNodePreference() {
+  return {
+    theme: els.nodeThemeInput.value.trim(),
+    visualDirection: els.nodeVisualInput.value.trim(),
+    primaryColor: colorOrDefault(els.nodePrimaryColorInput.value, "#0F766E"),
+    secondaryColor: colorOrDefault(els.nodeSecondaryColorInput.value, "#DBEAFE"),
+  };
+}
+
+function syncNodeCustomizer(node = state.selectedNode) {
+  if (!node) {
+    els.nodeCustomizer.hidden = true;
+    return;
+  }
+  els.nodeCustomizer.hidden = false;
+  els.nodeCustomizerTitle.textContent = `${node.name || "当前节点"}偏好`;
+  setNodePreferenceInputs(getNodePreference(node));
+}
+
+function storeCurrentNodePreference() {
+  if (!state.selectedNode) return;
+  const preference = readNodePreference();
+  state.nodePreferences[selectedNodeKey()] = preference;
+  if (state.selectedNode.isCustom) {
+    const keywords = splitPreferenceKeywords(preference.theme);
+    state.selectedNode = {
+      ...state.selectedNode,
+      keywords: keywords.length ? keywords : [state.selectedNode.name, "健康饮水"],
+      colors: [preference.primaryColor, preference.secondaryColor],
+      visual_direction: preference.visualDirection || "用户自定义主题风格",
+      copy_direction: preference.theme || `${state.selectedNode.name}主题传播`,
+    };
+    state.customNodeDraft = state.selectedNode;
+  }
+  renderSummary();
+}
+
+function selectMarketingNode(node) {
+  state.selectedNode = node;
+  state.customNodeDraft = null;
+  prefillStyleFromNode(node);
+  syncNodeCustomizer(node);
+  renderNodes();
+  renderSummary();
 }
 
 async function loadNodes() {
@@ -417,11 +570,7 @@ function renderNodes() {
     });
 
     card.addEventListener("click", () => {
-      state.selectedNode = node;
-      state.customNodeDraft = null;
-      prefillStyleFromNode(node);
-      renderNodes();
-      renderSummary();
+      selectMarketingNode(node);
     });
     els.nodeGrid.append(card);
   });
@@ -444,12 +593,12 @@ function useCustomNode() {
   const name = els.customNodeName.value.trim();
   const date = els.customNodeDate.value;
   if (!name) {
-    showMessage(els.nodesMessage, "请先填写自定义活动名称。", "warning");
+    showMessage(els.customNodeStatus, "请先填写自定义活动名称。", "warning");
     return;
   }
 
   const draft = {
-    id: "",
+    id: `custom_${Date.now()}`,
     name,
     date,
     type: "custom",
@@ -457,10 +606,33 @@ function useCustomNode() {
   };
   state.selectedNode = draft;
   state.customNodeDraft = draft;
-  addProtocolIssue("PRD 10.1 需要自定义节点名称和日期，但 12.13 创建任务请求体未定义 custom_node_name/custom_node_date 字段。当前不向 /poster-tasks 提交自定义节点。");
-  showMessage(els.nodesMessage, "已记录自定义节点协议缺口。请选择后端 seed 节点继续联调生成链路。", "warning");
+  const defaultPreference = {
+    theme: date ? `${name}、${date}` : name,
+    visualDirection: `${name}主题，结合品牌健康饮水传播`,
+    primaryColor: "#0F766E",
+    secondaryColor: "#DBEAFE",
+  };
+  state.nodePreferences[draft.id] = defaultPreference;
+  syncNodeCustomizer(draft);
+  storeCurrentNodePreference();
+  showMessage(els.customNodeStatus, "已启用自定义节点，可以继续选择素材并生成海报。", "success");
   renderNodes();
   renderSummary();
+}
+
+async function checkCustomNodeSupport() {
+  showMessage(els.customNodeStatus, "正在检测后端自定义节点提交链路...");
+  try {
+    const data = await request("/marketing-nodes");
+    const items = Array.isArray(data?.items) ? data.items : [];
+    showMessage(
+      els.customNodeStatus,
+      `检测结果：接口可用。后端支持临时 custom_ 节点ID和 custom_node_* 字段提交；当前固定节点 ${items.length} 个。`,
+      "success",
+    );
+  } catch (error) {
+    showMessage(els.customNodeStatus, `${error.code}: ${error.message}`, "error");
+  }
 }
 
 async function loadSystemAssets() {
@@ -527,6 +699,7 @@ function renderChoiceGrid(assetType, grid) {
   const assets = state.systemAssets[assetType];
   if (assetType === "qrcode") {
     const noneCard = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
+    noneCard.classList.add("qrcode-choice");
     noneCard.classList.toggle("selected", !state.selectedAssets.qrcode);
     noneCard.querySelector(".choice-thumb").textContent = "默认";
     noneCard.querySelector("strong").textContent = "不单独添加二维码";
@@ -549,6 +722,7 @@ function renderChoiceGrid(assetType, grid) {
 
   assets.forEach((asset) => {
     const card = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
+    card.classList.add(`${assetType}-choice`);
     card.classList.toggle("selected", state.selectedAssets[assetType]?.id === asset.id);
     const thumb = card.querySelector(".choice-thumb");
     const img = document.createElement("img");
@@ -926,12 +1100,51 @@ function renderCopyMode() {
   els.subtitlePreferenceInput.required = isManual;
 }
 
+function stylePreferenceText() {
+  return [els.styleSelect.value, els.customStyleInput.value.trim()].filter(Boolean).join("，");
+}
+
+function buildNodePayloadFields() {
+  const node = state.selectedNode;
+  const preference = readNodePreference();
+  const defaultPreference = defaultNodePreference(node);
+  const keywords = splitPreferenceKeywords(preference.theme || defaultPreference.theme);
+  const colors = [preference.primaryColor, preference.secondaryColor].filter(Boolean);
+  return {
+    custom_node_name: node?.isCustom ? node.name : "",
+    custom_node_date: node?.isCustom ? node.date || "" : "",
+    custom_node_type: node?.type || "custom",
+    custom_node_keywords: keywords.length ? keywords : splitPreferenceKeywords(defaultPreference.theme),
+    custom_node_colors: colors,
+    custom_node_visual_direction: preference.visualDirection || defaultPreference.visualDirection,
+    custom_node_copy_direction: preference.theme
+      ? `${node?.name || "当前节点"}主题传播：${preference.theme}`
+      : node?.copy_direction || "",
+  };
+}
+
+function buildScenePrompt() {
+  const nodeFields = buildNodePayloadFields();
+  const pieces = [
+    nodeFields.custom_node_visual_direction,
+    nodeFields.custom_node_keywords.length ? `主题关键词：${nodeFields.custom_node_keywords.join("、")}` : "",
+    nodeFields.custom_node_colors.length ? `色彩：${nodeFields.custom_node_colors.join("、")}` : "",
+    `风格：${stylePreferenceText()}`,
+    els.customRequirementInput.value.trim(),
+  ].filter(Boolean);
+  return pieces.join("；");
+}
+
 function buildCustomRequirement() {
   const copyModeLabel = currentCopyMode() === "manual" ? "手动填写文案" : "AI生成文案";
+  const nodeFields = buildNodePayloadFields();
   const pieces = [
     `文案模式：${copyModeLabel}`,
     `文案方向：${els.copyDirectionSelect.value}`,
-    `风格偏好：${els.styleSelect.value}`,
+    `风格偏好：${stylePreferenceText()}`,
+    nodeFields.custom_node_keywords.length ? `节点主题：${nodeFields.custom_node_keywords.join("、")}` : "",
+    nodeFields.custom_node_colors.length ? `节点颜色：${nodeFields.custom_node_colors.join("、")}` : "",
+    nodeFields.custom_node_visual_direction ? `画面主题：${nodeFields.custom_node_visual_direction}` : "",
   ];
   if (els.customRequirementInput.value.trim()) {
     pieces.push(`补充需求：${els.customRequirementInput.value.trim()}`);
@@ -939,7 +1152,7 @@ function buildCustomRequirement() {
   if (!state.selectedAssets.bottom_bar) {
     pieces.push("缺少底部条时请使用默认底条。");
   }
-  return pieces.join("；");
+  return pieces.filter(Boolean).join("；");
 }
 
 async function createPosterTask() {
@@ -959,6 +1172,8 @@ async function createPosterTask() {
     state.sourceMode === "scene_image"
       ? { scene_asset_id: state.sceneAsset.id, product_asset_ids: [] }
       : { scene_asset_id: null, product_asset_ids: state.productAssets.map((asset) => asset.id) };
+  storeCurrentNodePreference();
+  const nodeFields = buildNodePayloadFields();
 
   const payload = {
     node_id: state.selectedNode.id,
@@ -969,8 +1184,9 @@ async function createPosterTask() {
     qrcode_asset_id: state.selectedAssets.qrcode?.id || null,
     bottom_bar_asset_id: state.selectedAssets.bottom_bar.id,
     contact_text: els.contactInput.value.trim(),
-    scene_prompt: els.customRequirementInput.value.trim(),
+    scene_prompt: buildScenePrompt(),
     custom_requirement: buildCustomRequirement(),
+    ...nodeFields,
     copy_preference: {
       mode: copyMode,
       title: titlePreference,
@@ -1008,6 +1224,7 @@ async function createPosterTask() {
 
 function updatePollingPanel(task) {
   els.pollingPanel.hidden = false;
+  els.pollingPanel.dataset.status = task.status || "unknown";
   const progress = clamp(Number(task.progress || 0), 0, 100);
   els.progressBar.style.width = `${progress}%`;
   els.pollingStatus.textContent = `${statusLabel(task.status)} · ${progress}%`;
@@ -1099,7 +1316,8 @@ function handleTaskUpdate(data, startedAt) {
     } else {
       requiredFields("poster", state.poster, ["id", "jpg_url", "width", "height"]);
     }
-    showMessage(els.taskMessage, "海报生成完成。", "success");
+    const fallbackNote = taskUsesStableFallback(data) ? "已使用本地合成。" : "图片编辑融合已生成。";
+    showMessage(els.taskMessage, `海报生成完成，${fallbackNote}`, "success");
     setScreen("preview");
     renderPoster();
     const backendCopy = seedPreviewCopyFromBackend(data);
@@ -1161,10 +1379,12 @@ function renderPoster() {
     els.posterImage.src = resolveReturnedUrl(state.poster.thumbnail_url || state.poster.jpg_url);
     els.posterImage.hidden = false;
     els.posterEmpty.hidden = true;
+    els.posterFrame?.classList.add("has-poster");
   } else {
     els.posterImage.hidden = true;
     els.posterEmpty.hidden = false;
     els.posterEmpty.textContent = state.activeTask?.status === "failed" ? "任务失败，暂无可预览海报" : "任务完成后显示海报";
+    els.posterFrame?.classList.remove("has-poster");
   }
   renderPreviewSelects();
   renderCompliance();
@@ -1216,23 +1436,29 @@ function renderBackendResult() {
 function formatFusionResult(fusion) {
   if (!fusion) {
     if (state.activeTask?.status === "failed" && state.activeTask?.error?.code === "AI_IMAGE_FUSION_FAILED") {
-      return "图片模型未成功调用，未生成本地堆叠图";
+      return "图片模型未成功调用，等待稳定兜底结果";
     }
-    return ["pending", "processing"].includes(state.activeTask?.status) ? "AI 图片融合中" : "等待后端返回";
+    return ["pending", "processing"].includes(state.activeTask?.status) ? "图片编辑融合或本地合成中" : "等待后端返回";
   }
 
   const fallback = fusion.fallback || {};
+  const attempts = Array.isArray(fusion.attempts) ? fusion.attempts : [];
+  const lastAttempt = attempts.at(-1) || {};
   const pieces = [
     `provider=${fusion.provider || "unknown"}`,
     `mode=${fusion.mode || "unknown"}`,
     `model=${fusion.model || "unknown"}`,
     `fallback.used=${fallback.used ? "true" : "false"}`,
+    `attempts=${attempts.length}`,
   ];
   if (fusion.rerender_reused_scene) {
     pieces.push("rerender.reused_scene=true");
   }
   if (fallback.reason) {
     pieces.push(`fallback.reason=${fallback.reason}`);
+  }
+  if (lastAttempt.error) {
+    pieces.push(`last.error=${lastAttempt.error}`);
   }
   return pieces.join("；");
 }
@@ -1243,6 +1469,7 @@ function formatTaskErrorDetails(details) {
   if (details.reason) pieces.push(`reason=${details.reason}`);
   if (details.fusion_policy) pieces.push(`policy=${details.fusion_policy}`);
   if (details.local_fallback_used !== undefined) pieces.push(`local_fallback_used=${details.local_fallback_used}`);
+  if (Array.isArray(details.attempts) && details.attempts.length) pieces.push(`attempts=${details.attempts.length}`);
   return pieces.length ? `（${pieces.join("；")}）` : "";
 }
 
@@ -1600,7 +1827,12 @@ function bindEvents() {
   els.reloadAssetsBtn.addEventListener("click", loadSystemAssets);
   els.reloadProductsBtn.addEventListener("click", loadProducts);
   els.reloadProductAssetsBtn.addEventListener("click", loadSystemProductAssets);
+  els.checkCustomNodeBtn.addEventListener("click", checkCustomNodeSupport);
   els.useCustomNodeBtn.addEventListener("click", useCustomNode);
+  [els.nodeThemeInput, els.nodeVisualInput, els.nodePrimaryColorInput, els.nodeSecondaryColorInput].forEach((input) => {
+    input.addEventListener("input", storeCurrentNodePreference);
+  });
+  els.customStyleInput.addEventListener("input", renderSummary);
 
   els.goAssetsBtn.addEventListener("click", () => setScreen("assets"));
   els.goConfigBtn.addEventListener("click", () => setScreen("config"));
@@ -1617,7 +1849,7 @@ function bindEvents() {
     item.addEventListener("click", () => {
       const target = item.dataset.stepIndicator;
       if (target === "nodes") setScreen("nodes");
-      if (target === "assets" && state.selectedNode && !state.selectedNode.isCustom) setScreen("assets");
+      if (target === "assets" && state.selectedNode) setScreen("assets");
       if (target === "config" && canGoConfig()) setScreen("config");
       if (target === "preview" && (state.poster || state.activeTask?.status === "failed")) setScreen("preview");
     });
@@ -1697,12 +1929,15 @@ function bindEvents() {
 }
 
 async function init() {
+  document.body.dataset.screen = state.currentScreen;
+  els.stepper.querySelector('[data-step-indicator="nodes"]')?.setAttribute("aria-current", "step");
   bindEvents();
   renderSourceMode();
   renderCopyMode();
   renderProductAssets();
   renderSummary();
   renderCompliance();
+  await loadAppConfig();
   await Promise.all([loadNodes(), loadSystemAssets(), loadProducts()]);
 }
 

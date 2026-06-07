@@ -6,6 +6,7 @@ import os
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT_DIR / ".env"
+FRONTEND_DIR = ROOT_DIR / "frontend"
 STORAGE_DIR = ROOT_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 GENERATED_DIR = STORAGE_DIR / "generated"
@@ -47,6 +48,8 @@ def load_env_file(path: Path = ENV_FILE) -> None:
 
 
 load_env_file()
+
+APP_ENV = os.getenv("APP_ENV", "production").strip().lower() or "production"
 
 
 class AISettings:

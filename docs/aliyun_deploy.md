@@ -13,7 +13,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip nginx git
+sudo apt install -y python3 python3-venv python3-pip nginx git apache2-utils
 ```
 
 ## 项目目录
@@ -35,7 +35,26 @@ git clone <your-repo-url> .
 
 如果不用 Git，也可以把项目目录上传到 `/opt/festival_poster`。注意不要把本地真实 `.env` 泄露到公共仓库。
 
-## 后端配置
+## 推荐一键安装
+
+项目内已经提供阿里云 ECS 部署包，放在 `deploy/aliyun/`。拿到 ECS 登录信息并把项目上传或拉取到 `/opt/festival_poster` 后，优先执行：
+
+```bash
+cd /opt/festival_poster
+bash deploy/aliyun/install_server.sh
+```
+
+安装脚本会创建 `.venv`、安装依赖、创建演示用 `.env`、配置 systemd、配置 Nginx 反向代理，并交互式生成 Nginx Basic Auth 共享密码。密码只存在服务器 `/etc/nginx/.festival-poster.htpasswd`，不要写入代码、README 或提交记录。
+
+安装完成后访问：
+
+```text
+http://服务器IP或域名/
+```
+
+浏览器会先要求输入共享用户名和密码。登录后前端自动使用同源 `/api/v1`，普通用户不需要填写 API 地址。
+
+## 手动后端配置
 
 ```bash
 cd /opt/festival_poster
@@ -54,16 +73,24 @@ chmod 640 .env
 
 只在服务器 `.env` 写真实 Key。不要把真实 Key 写进代码、README、提交记录或日志。
 
-生产建议至少确认：
+答辩演示优先建议：
+
+```dotenv
+APP_ENV=demo
+AI_REQUIRE_IMAGE_FUSION=false
+CORS_ALLOW_LOCALHOST=false
+```
+
+这会启用明确标注的 fallback 演示模式，保证无真实图片模型 Key 时仍可复现主流程。真实 AI 联调时再切换：
 
 ```dotenv
 CORS_ORIGINS=http://your-domain.com,https://your-domain.com
 CORS_ALLOW_LOCALHOST=false
-API_ACCESS_TOKEN=replace_with_a_long_random_server_only_token
+APP_ENV=production
 AI_REQUIRE_IMAGE_FUSION=true
 ```
 
-`API_ACCESS_TOKEN` 是 MVP 的轻量访问保护。设置后，上传、创建任务、查询任务、合规检查和重渲染接口需要前端右上角“访问令牌”填写同一个值；不设置时保持本地演示模式。
+云端公开演示默认使用 Nginx Basic Auth 保护整站。`API_ACCESS_TOKEN` 可作为额外后端令牌，但普通答辩演示不使用前端令牌输入。
 
 SQLite 数据库默认位于：
 
@@ -78,14 +105,14 @@ SQLite 数据库默认位于：
 创建服务文件：
 
 ```bash
-sudo nano /etc/systemd/system/festival-poster-api.service
+sudo nano /etc/systemd/system/festival-poster.service
 ```
 
 写入：
 
 ```ini
 [Unit]
-Description=Festival Poster FastAPI
+Description=Festival Poster Demo FastAPI
 After=network.target
 
 [Service]
@@ -108,19 +135,19 @@ WantedBy=multi-user.target
 sudo chown www-data:www-data /opt/festival_poster/.env
 sudo chown -R www-data:www-data /opt/festival_poster/storage
 sudo systemctl daemon-reload
-sudo systemctl enable --now festival-poster-api
-sudo systemctl status festival-poster-api
+sudo systemctl enable --now festival-poster.service
+sudo systemctl status festival-poster.service
 ```
 
 查看日志：
 
 ```bash
-sudo journalctl -u festival-poster-api -f
+sudo journalctl -u festival-poster.service -f
 ```
 
 日志中不要输出真实 Key。
 
-## Nginx 前端和反向代理
+## Nginx 整站共享密码和反向代理
 
 创建站点配置：
 
@@ -128,18 +155,24 @@ sudo journalctl -u festival-poster-api -f
 sudo nano /etc/nginx/sites-available/festival-poster
 ```
 
-写入，将 `your-domain.com` 替换为正式域名或服务器公网 IP：
+写入。该配置把整站转发到 FastAPI 单入口，并启用 Basic Auth：
 
 ```nginx
 server {
     listen 80;
-    server_name your-domain.com;
+    server_name _;
 
-    root /opt/festival_poster/frontend;
-    index index.html;
+    client_max_body_size 20m;
+
+    auth_basic "Festival Poster Demo";
+    auth_basic_user_file /etc/nginx/.festival-poster.htpasswd;
 
     location / {
-        try_files $uri $uri/ /index.html;
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /api/v1/ {
@@ -172,13 +205,13 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-前端页面的 API 地址可以设为：
+创建共享密码：
 
-```text
-http://your-domain.com/api/v1
+```bash
+sudo htpasswd -c /etc/nginx/.festival-poster.htpasswd demo
 ```
 
-同域部署时也可以后续把前端默认 API 改成 `/api/v1`。
+如果使用 `deploy/aliyun/install_server.sh`，这一步会由脚本交互完成。
 
 ## 生产安全项
 
@@ -187,7 +220,7 @@ http://your-domain.com/api/v1
 - `storage/` 做持久化备份，尤其是 `storage/festival_poster.sqlite3`、`storage/uploads/`、`storage/generated/`。
 - 阿里云安全组只开放必要端口。
 - 生产环境把 CORS 收紧到正式域名或服务器 IP，并设置 `CORS_ALLOW_LOCALHOST=false`。
-- 对外部署建议设置 `API_ACCESS_TOKEN`，降低公开上传和生图接口被滥用的风险。
+- 对外部署必须保留 Nginx Basic Auth 或等效访问控制，降低公开上传和生图接口被滥用的风险。
 - 如果启用 HTTPS，使用阿里云证书或 Certbot，并把 Nginx 监听改为 `443 ssl`。
 - 不要在服务器上执行清空 `storage/` 的操作，避免丢失 SQLite、上传素材和生成结果。
 
@@ -206,11 +239,11 @@ cp storage/festival_poster.sqlite3 storage/backups/festival_poster_$(date +%Y%m%
 ```bash
 git pull --ff-only
 ./.venv/bin/pip install -r requirements.txt
-sudo systemctl restart festival-poster-api
+sudo systemctl restart festival-poster.service
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-验证：
+验证本机后端：
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -222,12 +255,16 @@ curl -I http://127.0.0.1:8000/storage/festival_poster.sqlite3
 
 如需回滚，切回上一个 Git 提交并重启服务；如果数据库也需要回滚，先停止服务，再用备份 SQLite 覆盖当前数据库。
 
-## 不触发生图的上线检查
+## 完整上线验证
 
 ```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/api/v1/products
-curl "http://127.0.0.1:8000/api/v1/assets?asset_type=product_image&source=product_material"
+bash deploy/aliyun/verify_server.sh http://127.0.0.1:8000
 ```
 
-完整闭环测试要等允许触发生图后再执行 `POST /api/v1/poster-tasks`。
+公网验证带 Basic Auth：
+
+```bash
+BASIC_AUTH_USER=demo BASIC_AUTH_PASS='服务器上生成的共享密码' bash deploy/aliyun/verify_server.sh http://服务器IP或域名
+```
+
+验证脚本会跑完整闭环：health、节点、产品、Logo、底部条、上传、任务生成、JPG 可访问、二维码为空时不叠加、SQLite 不公开。服务重启后，历史 `pending/processing` 任务会被标记为 failed，不会卡住。
