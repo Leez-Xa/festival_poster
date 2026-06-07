@@ -315,6 +315,7 @@ def compose_poster(
             node=node,
             product=product,
             payload=payload,
+            copy=copy,
             product_asset=product_asset,
             scene_reference_asset=scene_reference_asset,
             output_dir=output_dir,
@@ -326,22 +327,30 @@ def compose_poster(
         fusion_meta["base_scene_url"] = public_storage_url(scene_base_path)
         fusion_meta["rerender_product_overlay"] = local_product_overlay
 
-    canvas = apply_layout_panels(base_canvas, layout)
+    ai_handles_copy = bool(fusion_meta.get("ai_handles_copy"))
+    canvas = base_canvas.convert("RGBA") if ai_handles_copy else apply_layout_panels(base_canvas, layout)
     draw = ImageDraw.Draw(canvas)
 
     if local_product_overlay and product_asset:
         paste_product_local(canvas, Path(product_asset["_file_path"]), layout)
     paste_logo(canvas, Path(logo_asset["_file_path"]), layout)
-    draw_text_block(draw, copy["title"], copy["subtitle"], layout)
+    if not ai_handles_copy:
+        draw_text_block(draw, copy["title"], copy["subtitle"], layout)
     paste_bottom_bar(canvas, Path(bottom_bar_asset["_file_path"]), layout)
-    draw_footer_text(
-        draw,
-        layout=layout,
-        contact_text=payload.contact_text,
-        custom_requirement=payload.custom_requirement,
-    )
+    if not ai_handles_copy:
+        draw_footer_text(
+            draw,
+            layout=layout,
+            contact_text=payload.contact_text,
+            custom_requirement=payload.custom_requirement,
+        )
     if qrcode_asset:
         paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout)
+
+    poster_copy = {
+        "title": (fusion_meta.get("on_image_title") or copy["title"]) if ai_handles_copy else copy["title"],
+        "subtitle": (fusion_meta.get("on_image_subtitle") or copy["subtitle"]) if ai_handles_copy else copy["subtitle"],
+    }
 
     rgb = canvas.convert("RGB")
     rgb.save(poster_path, "JPEG", quality=92, optimize=True)
@@ -362,7 +371,11 @@ def compose_poster(
             **resolved,
             "background_asset_id": background_asset["id"] if background_asset else None,
         },
-        "copy": copy,
+        "copy": {
+            **copy,
+            **poster_copy,
+            "source": "ai_image_prompt" if ai_handles_copy else copy.get("source"),
+        },
         "compliance": compliance_override or task.get("compliance"),
         "fusion": build_composition_fusion(
             payload=payload,
@@ -384,10 +397,7 @@ def compose_poster(
         "height": CANVAS_SIZE[1],
         "file_size_bytes": poster_path.stat().st_size,
         "composition_json_url": f"/api/v1/poster-tasks/{task_id}/composition",
-        "copy": {
-            "title": copy["title"],
-            "subtitle": copy["subtitle"],
-        },
+        "copy": poster_copy,
     }
     return poster, composition["fusion"]
 
@@ -420,6 +430,7 @@ def build_ai_scene_canvas(
     node: dict[str, Any],
     product: dict[str, Any],
     payload: PosterTaskCreate,
+    copy: dict[str, Any] | None,
     product_asset: dict[str, Any],
     scene_reference_asset: dict[str, Any] | None,
     output_dir: Path,
@@ -450,6 +461,7 @@ def build_ai_scene_canvas(
             product_asset_id=product_asset["id"],
             output_dir=output_dir,
             scene_reference_path=scene_reference_path,
+            copy=copy,
             canvas_size=CANVAS_SIZE,
             safe_zones=default_safe_zones(),
         )
@@ -465,6 +477,14 @@ def build_ai_scene_canvas(
                 "negative_prompt": fusion.negative_prompt,
                 "preserve_product_pixels": fusion.preserve_product_pixels,
                 "generated_image_contains_product": True,
+                "ai_handles_copy": True,
+                "on_image_title": fusion.on_image_title,
+                "on_image_subtitle": fusion.on_image_subtitle,
+                "reference_prompt_source": fusion.reference_prompt_source,
+                "base_style_prompt": fusion.base_style_prompt,
+                "node_style_prompt": fusion.node_style_prompt,
+                "final_image_prompt": fusion.final_image_prompt or fusion.prompt,
+                "reference_analysis_fallback_used": fusion.reference_analysis_fallback_used,
                 "source_size": image_size(fusion.image_path),
                 "fit": scene_fit_meta(fusion.image_path),
                 "warnings": fusion.warnings,
@@ -520,7 +540,7 @@ def build_local_fallback_scene_canvas(
         source_asset = get_asset(node.get("background_asset_id")) or get_asset("asset_bg_anniversary")
     source_path = Path(source_asset["_file_path"]) if source_asset else None
     return (
-        load_canvas_image(source_path, blur_radius=2.2, tint_color="#F7FBFA", tint_alpha=0.18),
+        load_canvas_image(source_path, blur_radius=0, tint_color=None, tint_alpha=0),
         {
             "mode": "local_background_local_compose",
             "status": "local",
@@ -531,6 +551,14 @@ def build_local_fallback_scene_canvas(
             "negative_prompt": "",
             "preserve_product_pixels": True,
             "generated_image_contains_product": False,
+            "ai_handles_copy": False,
+            "on_image_title": "",
+            "on_image_subtitle": "",
+            "reference_prompt_source": "local_fallback",
+            "base_style_prompt": "",
+            "node_style_prompt": "",
+            "final_image_prompt": payload.scene_prompt or payload.custom_requirement,
+            "reference_analysis_fallback_used": True,
             "source_size": image_size(source_path),
             "fit": scene_fit_meta(source_path),
             "warnings": [fallback_reason],
@@ -617,6 +645,14 @@ def build_composition_fusion(
         "custom_requirement": payload.custom_requirement,
         "positive_prompt": fusion_meta["positive_prompt"],
         "negative_prompt": fusion_meta["negative_prompt"],
+        "reference_prompt_source": fusion_meta.get("reference_prompt_source"),
+        "base_style_prompt": fusion_meta.get("base_style_prompt"),
+        "node_style_prompt": fusion_meta.get("node_style_prompt"),
+        "final_image_prompt": fusion_meta.get("final_image_prompt") or fusion_meta["positive_prompt"],
+        "on_image_title": fusion_meta.get("on_image_title"),
+        "on_image_subtitle": fusion_meta.get("on_image_subtitle"),
+        "reference_analysis_fallback_used": bool(fusion_meta.get("reference_analysis_fallback_used", True)),
+        "ai_handles_copy": bool(fusion_meta.get("ai_handles_copy")),
         "preserve_product_pixels": fusion_meta["preserve_product_pixels"],
         "generated_image_contains_product": fusion_meta.get(
             "generated_image_contains_product",
@@ -772,7 +808,7 @@ def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any])
             image_y = image_box[1] + (box_height(image_box) - target_size) // 2
             canvas.alpha_composite(qrcode_square, (image_x, image_y))
             caption_font = load_font(24, bold=True)
-            draw_centered_text(draw, "Scan", (card_box[0], int(settings["caption_y"]), card_box[2], card_box[3] - 8), caption_font, "#12312E")
+            draw_centered_text(draw, "扫码", (card_box[0], int(settings["caption_y"]), card_box[2], card_box[3] - 8), caption_font, "#12312E")
     except Exception:
         pass
 
@@ -799,7 +835,7 @@ def draw_footer_text(
     custom_requirement: str,
 ) -> None:
     del custom_requirement
-    text = contact_text.strip() or "Contact local sales consultant"
+    text = contact_text.strip() or "扫码咨询当地销售顾问"
     draw_fitted_text(draw, text, layout["contact"], bold=True, shadow_alpha=150)
 
 

@@ -10,6 +10,7 @@ STORAGE_DIR = ROOT_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 GENERATED_DIR = STORAGE_DIR / "generated"
 SYSTEM_DIR = STORAGE_DIR / "system"
+PROMPT_CACHE_DIR = STORAGE_DIR / "prompt_cache"
 DB_PATH = STORAGE_DIR / "festival_poster.sqlite3"
 
 API_PREFIX = "/api/v1"
@@ -156,5 +157,5 @@ API_ACCESS_TOKEN_REQUIRED = _is_real_secret(API_ACCESS_TOKEN)
 
 
 def ensure_storage_dirs() -> None:
-    for path in (STORAGE_DIR, UPLOAD_DIR, GENERATED_DIR, SYSTEM_DIR):
+    for path in (STORAGE_DIR, UPLOAD_DIR, GENERATED_DIR, SYSTEM_DIR, PROMPT_CACHE_DIR):
         path.mkdir(parents=True, exist_ok=True)

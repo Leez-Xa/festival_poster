@@ -17,16 +17,21 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-from app.config import AISettings, get_ai_settings
+from app.config import AISettings, PROMPT_CACHE_DIR, ROOT_DIR, get_ai_settings
 from app.models import PosterTaskCreate
+from config.seed_data import COMPLIANCE_RULES
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_CANVAS_SIZE = (1080, 1920)
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
+REFERENCE_POSTER_DIR = ROOT_DIR / "素材" / "节日节气海报"
+REFERENCE_PROMPT_CACHE = PROMPT_CACHE_DIR / "reference_posters.json"
+REFERENCE_PROMPT_VERSION = "reference_prompt_v2_chinese_art_text"
+REFERENCE_ANALYSIS_MAX_IMAGES = 6
 
 
 class AiProviderError(Exception):
@@ -57,6 +62,13 @@ class ScenePromptResult:
     negative_prompt: str
     provider: str = "mock"
     model: str = "local"
+    on_image_title: str = ""
+    on_image_subtitle: str = ""
+    reference_prompt_source: str = "local_fallback"
+    base_style_prompt: str = ""
+    node_style_prompt: str = ""
+    final_image_prompt: str = ""
+    reference_analysis_fallback_used: bool = True
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +76,13 @@ class ScenePromptResult:
             "negative_prompt": self.negative_prompt,
             "provider": self.provider,
             "model": self.model,
+            "on_image_title": self.on_image_title,
+            "on_image_subtitle": self.on_image_subtitle,
+            "reference_prompt_source": self.reference_prompt_source,
+            "base_style_prompt": self.base_style_prompt,
+            "node_style_prompt": self.node_style_prompt,
+            "final_image_prompt": self.final_image_prompt or self.positive_prompt,
+            "reference_analysis_fallback_used": self.reference_analysis_fallback_used,
         }
 
 
@@ -79,6 +98,13 @@ class SceneFusionResult:
     used_product_asset_id: str = ""
     preserve_product_pixels: bool = True
     warnings: list[str] = field(default_factory=list)
+    on_image_title: str = ""
+    on_image_subtitle: str = ""
+    reference_prompt_source: str = "local_fallback"
+    base_style_prompt: str = ""
+    node_style_prompt: str = ""
+    final_image_prompt: str = ""
+    reference_analysis_fallback_used: bool = True
 
 
 @dataclass
@@ -113,10 +139,11 @@ class AiProvider:
         node: dict[str, Any],
         product: dict[str, Any],
         payload: PosterTaskCreate,
+        copy: dict[str, Any] | None = None,
     ) -> ScenePromptResult:
         return self._run_with_timeout(
             "generate_scene_prompt",
-            lambda: self._generate_scene_prompt(node=node, product=product, payload=payload),
+            lambda: self._generate_scene_prompt(node=node, product=product, payload=payload, copy=copy),
             timeout_seconds=self.settings.text_timeout_seconds,
         )
 
@@ -130,13 +157,14 @@ class AiProvider:
         product_asset_id: str,
         output_dir: Path,
         scene_reference_path: Path | None = None,
+        copy: dict[str, Any] | None = None,
         canvas_size: tuple[int, int] = DEFAULT_CANVAS_SIZE,
         safe_zones: dict[str, tuple[int, int, int, int]] | None = None,
     ) -> SceneFusionResult:
         try:
-            prompt_result = self.generate_scene_prompt(node=node, product=product, payload=payload)
+            prompt_result = self.generate_scene_prompt(node=node, product=product, payload=payload, copy=copy)
         except AiProviderError:
-            prompt_result = build_local_scene_prompt(node=node, product=product, payload=payload)
+            prompt_result = build_local_scene_prompt(node=node, product=product, payload=payload, copy=copy)
 
         return self._run_with_timeout(
             "generate_scene_with_product",
@@ -221,6 +249,7 @@ class AiProvider:
         node: dict[str, Any],
         product: dict[str, Any],
         payload: PosterTaskCreate,
+        copy: dict[str, Any] | None = None,
     ) -> ScenePromptResult:
         raise NotImplementedError
 
@@ -298,8 +327,9 @@ class MockBridgeAiProvider(AiProvider):
         node: dict[str, Any],
         product: dict[str, Any],
         payload: PosterTaskCreate,
+        copy: dict[str, Any] | None = None,
     ) -> ScenePromptResult:
-        return build_local_scene_prompt(node=node, product=product, payload=payload)
+        return build_local_scene_prompt(node=node, product=product, payload=payload, copy=copy)
 
     def _generate_scene_with_product(
         self,
@@ -321,9 +351,11 @@ class MockBridgeAiProvider(AiProvider):
             path=image_path,
             node=node,
             product_image_path=transparent_product_png,
-            scene_reference_path=scene_reference_path,
+            scene_reference_path=None,
             canvas_size=canvas_size,
             safe_zones=safe_zones,
+            on_image_title=prompt_result.on_image_title,
+            on_image_subtitle=prompt_result.on_image_subtitle,
         )
         return SceneFusionResult(
             image_path=image_path,
@@ -335,6 +367,13 @@ class MockBridgeAiProvider(AiProvider):
             prompt_provider=prompt_result.provider,
             used_product_asset_id=product_asset_id,
             preserve_product_pixels=True,
+            on_image_title=prompt_result.on_image_title,
+            on_image_subtitle=prompt_result.on_image_subtitle,
+            reference_prompt_source=prompt_result.reference_prompt_source,
+            base_style_prompt=prompt_result.base_style_prompt,
+            node_style_prompt=prompt_result.node_style_prompt,
+            final_image_prompt=prompt_result.final_image_prompt or prompt_result.positive_prompt,
+            reference_analysis_fallback_used=prompt_result.reference_analysis_fallback_used,
         )
 
     def _generate_background_only(
@@ -434,10 +473,13 @@ class OpenAICompatibleAiProvider(AiProvider):
         node: dict[str, Any],
         product: dict[str, Any],
         payload: PosterTaskCreate,
+        copy: dict[str, Any] | None = None,
     ) -> ScenePromptResult:
         if not self.settings.has_text_credentials:
             raise AiProviderError("提示词生成 Key 未配置")
 
+        reference_library = load_reference_prompt_library(self.settings, allow_remote=True)
+        rough_copy = normalize_copy_context(copy=copy, node=node, product=product, payload=payload)
         response = post_openai_compatible_json(
             base_url=self.settings.base_url,
             endpoint="/chat/completions",
@@ -448,26 +490,39 @@ class OpenAICompatibleAiProvider(AiProvider):
                     {
                         "role": "system",
                         "content": (
-                            "你是海报场景提示词助手。只返回 JSON。"
-                            "目标是为图像模型生成正向和负向提示词。"
-                            "必须强调：产品主体必须来自用户提供的透明 PNG，不允许重绘产品结构，"
-                            "禁止输出文字、Logo、二维码、水印，并为顶部 Logo 区与底部文案二维码区预留安全区。"
+                            "你是中文节日产品海报的生图提示词导演，只返回 JSON，不要 Markdown。"
+                            "图片模型只会收到一张产品参考图，不会收到节日参考海报图。"
+                            "你必须把参考海报提示词库、当前节点、产品资料和用户需求整合成最终中文生图提示词。"
+                            "最终画面允许生成中文主标题、副标题和艺术字，但语气必须先有节日氛围，再自然带出产品陪伴，"
+                            "不要强硬推销，不要绝对化宣传，不要医疗功效承诺。"
                         ),
                     },
                     {
                         "role": "user",
                         "content": json.dumps(
                             {
-                                "task": "生成融合场景图的正向提示词和负向提示词",
+                                "task": "为图片模型生成中文节日产品海报提示词",
                                 "required_schema": {
-                                    "positive_prompt": "完整中文提示词",
-                                    "negative_prompt": "完整中文负向提示词",
+                                    "on_image_title": "不超过18个中文字符，适合艺术字主标题",
+                                    "on_image_subtitle": "不超过42个中文字符，柔性带出产品陪伴",
+                                    "scene_prompt": "节日氛围、人物/空间/产品自然融入方式",
+                                    "typography_prompt": "中文艺术字风格、位置、层级、可读性要求",
+                                    "negative_prompt": "禁止英文、乱码、硬广、医疗功效、额外Logo、二维码、水印、产品变形",
                                 },
+                                "reference_prompt_library": reference_library,
+                                "rough_copy": rough_copy,
                                 "node": node,
                                 "product": product,
                                 "scene_prompt": payload.scene_prompt,
                                 "custom_requirement": payload.custom_requirement,
                                 "contact_text": payload.contact_text,
+                                "hard_constraints": [
+                                    "最终画面是 1080x1920 竖版中文节日产品海报。",
+                                    "图片模型只接收产品图，请用文字描述参考海报风格，不要要求模型读取第二张参考图。",
+                                    "产品必须像真实物体一样融入场景，有接触面、阴影、环境光和合理比例。",
+                                    "顶部预留 Logo 区，底部预留底部宣传条区；不要生成额外 Logo 和二维码。",
+                                    "可生成中文艺术字主标题和副标题；除产品型号外不要出现英文字母。",
+                                ],
                             },
                             ensure_ascii=False,
                         ),
@@ -479,13 +534,13 @@ class OpenAICompatibleAiProvider(AiProvider):
             timeout_seconds=self.settings.text_timeout_seconds,
         )
         parsed = parse_json_content(response["choices"][0]["message"]["content"])
-        positive_prompt = str(parsed.get("positive_prompt", "")).strip()
-        negative_prompt = str(parsed.get("negative_prompt", "")).strip()
-        if not positive_prompt or not negative_prompt:
-            raise AiProviderError("提示词生成结果缺少 positive_prompt 或 negative_prompt")
-        return ScenePromptResult(
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
+        return build_scene_prompt_result(
+            parsed=parsed,
+            node=node,
+            product=product,
+            payload=payload,
+            copy=rough_copy,
+            reference_library=reference_library,
             provider="openai_compatible_text",
             model=self.settings.scene_prompt_model,
         )
@@ -523,12 +578,13 @@ class OpenAICompatibleAiProvider(AiProvider):
                 "prompt": prompt,
                 "negative_prompt": prompt_result.negative_prompt,
                 "product_image_b64": encode_image_base64(transparent_product_png),
-                "scene_reference_b64": encode_image_base64(scene_reference_path) if scene_reference_path else None,
                 "canvas_size": list(canvas_size),
                 "safe_zones": normalize_safe_zones(safe_zones),
                 "constraints": {
                     "preserve_product_pixels": True,
-                    "no_text": True,
+                    "no_text": False,
+                    "chinese_text_only": True,
+                    "allow_artistic_chinese_title": True,
                     "no_logo": True,
                     "no_qrcode": True,
                     "no_watermark": True,
@@ -537,6 +593,9 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "node_id": node.get("id"),
                     "product_id": product.get("id"),
                     "contact_text": payload.contact_text,
+                    "on_image_title": prompt_result.on_image_title,
+                    "on_image_subtitle": prompt_result.on_image_subtitle,
+                    "reference_prompt_source": prompt_result.reference_prompt_source,
                 },
             }
             if self.settings.image_response_format:
@@ -549,9 +608,6 @@ class OpenAICompatibleAiProvider(AiProvider):
                 timeout_seconds=self.settings.image_timeout_seconds,
             )
         else:
-            image_files = [transparent_product_png]
-            if scene_reference_path:
-                image_files.append(scene_reference_path)
             response = post_openai_compatible_multipart_json(
                 base_url=self.settings.base_url,
                 endpoint=self.settings.image_fusion_endpoint,
@@ -565,7 +621,7 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "output_format": self.settings.image_output_format,
                     "response_format": self.settings.image_response_format,
                 },
-                image_files=image_files,
+                image_files=[transparent_product_png],
                 image_field=self.settings.image_file_field,
                 timeout_seconds=self.settings.image_timeout_seconds,
             )
@@ -580,6 +636,13 @@ class OpenAICompatibleAiProvider(AiProvider):
             prompt_provider=prompt_result.provider,
             used_product_asset_id=product_asset_id,
             preserve_product_pixels=True,
+            on_image_title=prompt_result.on_image_title,
+            on_image_subtitle=prompt_result.on_image_subtitle,
+            reference_prompt_source=prompt_result.reference_prompt_source,
+            base_style_prompt=prompt_result.base_style_prompt,
+            node_style_prompt=prompt_result.node_style_prompt,
+            final_image_prompt=prompt_result.final_image_prompt or prompt,
+            reference_analysis_fallback_used=prompt_result.reference_analysis_fallback_used,
         )
 
     def _generate_background_only(
@@ -674,41 +737,364 @@ def build_local_scene_prompt(
     node: dict[str, Any],
     product: dict[str, Any],
     payload: PosterTaskCreate,
+    copy: dict[str, Any] | None = None,
 ) -> ScenePromptResult:
-    positive_prompt = build_scene_positive_prompt(node=node, product=product, payload=payload)
-    negative_prompt = build_negative_prompt()
-    return ScenePromptResult(
-        positive_prompt=positive_prompt,
-        negative_prompt=negative_prompt,
+    reference_library = load_reference_prompt_library(get_ai_settings(), allow_remote=False)
+    rough_copy = normalize_copy_context(copy=copy, node=node, product=product, payload=payload)
+    return build_scene_prompt_result(
+        parsed={},
+        node=node,
+        product=product,
+        payload=payload,
+        copy=rough_copy,
+        reference_library=reference_library,
         provider="local_fallback",
         model="local_template",
     )
 
 
-def build_scene_positive_prompt(
+def load_reference_prompt_library(settings: AISettings, *, allow_remote: bool) -> dict[str, Any]:
+    cache = read_reference_prompt_cache()
+    if cache and (not cache.get("reference_analysis_fallback_used") or not allow_remote or not settings.has_text_credentials):
+        return cache
+
+    fallback = build_fallback_reference_prompt_library()
+    if allow_remote and settings.has_text_credentials:
+        try:
+            library = analyze_reference_posters(settings=settings, fallback=fallback)
+            write_reference_prompt_cache(library)
+            return library
+        except AiProviderError as exc:
+            logger.warning("Reference poster analysis fallback used: %s", exc)
+
+    if not cache:
+        write_reference_prompt_cache(fallback)
+    return fallback
+
+
+def read_reference_prompt_cache() -> dict[str, Any] | None:
+    if not REFERENCE_PROMPT_CACHE.exists():
+        return None
+    try:
+        data = json.loads(REFERENCE_PROMPT_CACHE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != REFERENCE_PROMPT_VERSION:
+        return None
+    return data
+
+
+def write_reference_prompt_cache(library: dict[str, Any]) -> None:
+    try:
+        PROMPT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        REFERENCE_PROMPT_CACHE.write_text(json.dumps(library, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write reference prompt cache: %s", exc)
+
+
+def build_fallback_reference_prompt_library() -> dict[str, Any]:
+    files = list_reference_poster_files()
+    return {
+        "version": REFERENCE_PROMPT_VERSION,
+        "source": "local_fallback",
+        "reference_analysis_fallback_used": True,
+        "analyzed_files": [path.name for path in files],
+        "base_style_prompt": (
+            "中文节日产品海报，竖版构图，节日氛围先行，画面有真实生活空间、暖光、层次和留白。"
+            "主标题使用中文艺术字，与节日元素自然结合；副文案温和表达产品陪伴，不做强硬卖点推销。"
+            "产品像真实物体一样出现在餐边柜、厨房台面、客厅边柜、办公室茶水间等合适位置。"
+        ),
+        "node_style_prompts": {},
+        "typography_rules": (
+            "中文主标题清晰可读、具有节日艺术字质感；副标题较小，贴近生活祝福语。"
+            "文字与场景光影融合，但不能变成乱码、错别字或英文。"
+        ),
+        "composition_rules": (
+            "顶部保留 Logo 安全区，底部保留底部宣传条安全区。"
+            "画面中心到中下部用于产品和人物/空间关系，不让产品悬浮或被遮挡。"
+        ),
+        "negative_prompt": "不要英文硬广、乱码、错别字、价格标签、额外Logo、二维码、水印、医疗功效承诺、绝对化承诺。",
+    }
+
+
+def analyze_reference_posters(*, settings: AISettings, fallback: dict[str, Any]) -> dict[str, Any]:
+    files = list_reference_poster_files()[:REFERENCE_ANALYSIS_MAX_IMAGES]
+    if not files:
+        return fallback
+
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": json.dumps(
+                {
+                    "task": "分析这些中文节日节气参考海报，提炼给图片模型使用的提示词库。",
+                    "required_schema": {
+                        "base_style_prompt": "统一风格提示词",
+                        "node_style_prompts": {"节点名或文件名": "该节点提示词"},
+                        "typography_rules": "中文艺术字规则",
+                        "composition_rules": "构图和留白规则",
+                        "negative_prompt": "负向提示词",
+                    },
+                    "rules": [
+                        "只提炼风格、节日氛围、构图和中文艺术字规律。",
+                        "不要复制原海报具体文字、二维码、价格、联系方式。",
+                        "提示词要适合净水机/饮水产品自然融入节日生活场景。",
+                    ],
+                    "files": [path.name for path in files],
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    for path in files:
+        data_url = encode_reference_image_data_url(path)
+        if data_url:
+            content.append({"type": "image_url", "image_url": {"url": data_url}})
+
+    response = post_openai_compatible_json(
+        base_url=settings.base_url,
+        endpoint="/chat/completions",
+        api_key=settings.text_api_key,
+        body={
+            "model": settings.scene_prompt_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是中文商业海报视觉分析师。只返回 JSON，不要 Markdown。",
+                },
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.25,
+            "response_format": {"type": "json_object"},
+        },
+        timeout_seconds=settings.text_timeout_seconds,
+    )
+    parsed = parse_json_content(response["choices"][0]["message"]["content"])
+    return normalize_reference_prompt_library(parsed=parsed, fallback=fallback, files=files)
+
+
+def normalize_reference_prompt_library(
+    *,
+    parsed: dict[str, Any],
+    fallback: dict[str, Any],
+    files: list[Path],
+) -> dict[str, Any]:
+    base_style_prompt = str(parsed.get("base_style_prompt") or fallback["base_style_prompt"]).strip()
+    typography_rules = str(parsed.get("typography_rules") or fallback["typography_rules"]).strip()
+    composition_rules = str(parsed.get("composition_rules") or fallback["composition_rules"]).strip()
+    negative_prompt = str(parsed.get("negative_prompt") or fallback["negative_prompt"]).strip()
+    node_prompts = parsed.get("node_style_prompts")
+    if not isinstance(node_prompts, dict):
+        node_prompts = {}
+    return {
+        "version": REFERENCE_PROMPT_VERSION,
+        "source": "vision_text_analysis",
+        "reference_analysis_fallback_used": False,
+        "analyzed_files": [path.name for path in files],
+        "base_style_prompt": base_style_prompt,
+        "node_style_prompts": {str(key): str(value).strip() for key, value in node_prompts.items() if str(value).strip()},
+        "typography_rules": typography_rules,
+        "composition_rules": composition_rules,
+        "negative_prompt": negative_prompt,
+    }
+
+
+def list_reference_poster_files() -> list[Path]:
+    if not REFERENCE_POSTER_DIR.exists():
+        return []
+    allowed = {".jpg", ".jpeg", ".png", ".webp"}
+    return sorted(
+        [path for path in REFERENCE_POSTER_DIR.iterdir() if path.is_file() and path.suffix.lower() in allowed],
+        key=lambda item: item.name,
+    )
+
+
+def encode_reference_image_data_url(path: Path) -> str | None:
+    try:
+        with Image.open(path) as image:
+            image = ImageOps.contain(image.convert("RGB"), (768, 768), method=Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=72, optimize=True)
+    except Exception as exc:
+        logger.warning("Could not encode reference poster %s: %s", path.name, exc)
+        return None
+    return f"data:image/jpeg;base64,{base64.b64encode(buffer.getvalue()).decode('utf-8')}"
+
+
+def normalize_copy_context(
+    *,
+    copy: dict[str, Any] | None,
+    node: dict[str, Any],
+    product: dict[str, Any],
+    payload: PosterTaskCreate,
+) -> dict[str, str]:
+    title = str((copy or {}).get("title") or payload.copy_preference.title or f"{node.get('name', '节日')}好水相伴").strip()
+    subtitle = str(
+        (copy or {}).get("subtitle")
+        or payload.copy_preference.subtitle
+        or f"让{product.get('name', '产品')}自然融入团圆时刻"
+    ).strip()
+    return {
+        "title": sanitize_marketing_text(title, fallback=f"{node.get('name', '节日')}好水相伴", limit=18),
+        "subtitle": sanitize_marketing_text(subtitle, fallback="把健康饮水融入节日生活", limit=42),
+    }
+
+
+def build_scene_prompt_result(
+    *,
+    parsed: dict[str, Any],
+    node: dict[str, Any],
+    product: dict[str, Any],
+    payload: PosterTaskCreate,
+    copy: dict[str, str],
+    reference_library: dict[str, Any],
+    provider: str,
+    model: str,
+) -> ScenePromptResult:
+    on_image_title = sanitize_marketing_text(
+        str(parsed.get("on_image_title") or copy["title"]),
+        fallback=copy["title"],
+        limit=18,
+    )
+    on_image_subtitle = sanitize_marketing_text(
+        str(parsed.get("on_image_subtitle") or copy["subtitle"]),
+        fallback=copy["subtitle"],
+        limit=42,
+    )
+    base_style_prompt = str(reference_library.get("base_style_prompt") or "").strip()
+    node_style_prompt = get_node_style_prompt(reference_library=reference_library, node=node)
+    typography_prompt = str(parsed.get("typography_prompt") or reference_library.get("typography_rules") or "").strip()
+    scene_prompt = str(parsed.get("scene_prompt") or build_default_scene_prompt(node=node, product=product, payload=payload)).strip()
+    negative_prompt = combine_negative_prompts(
+        str(parsed.get("negative_prompt") or ""),
+        str(reference_library.get("negative_prompt") or ""),
+        build_negative_prompt(),
+    )
+    positive_prompt = compose_final_image_prompt(
+        node=node,
+        product=product,
+        payload=payload,
+        title=on_image_title,
+        subtitle=on_image_subtitle,
+        base_style_prompt=base_style_prompt,
+        node_style_prompt=node_style_prompt,
+        scene_prompt=scene_prompt,
+        typography_prompt=typography_prompt,
+    )
+    return ScenePromptResult(
+        positive_prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        provider=provider,
+        model=model,
+        on_image_title=on_image_title,
+        on_image_subtitle=on_image_subtitle,
+        reference_prompt_source=str(reference_library.get("source") or provider),
+        base_style_prompt=base_style_prompt,
+        node_style_prompt=node_style_prompt,
+        final_image_prompt=positive_prompt,
+        reference_analysis_fallback_used=bool(reference_library.get("reference_analysis_fallback_used", True)),
+    )
+
+
+def get_node_style_prompt(*, reference_library: dict[str, Any], node: dict[str, Any]) -> str:
+    prompts = reference_library.get("node_style_prompts")
+    if isinstance(prompts, dict):
+        candidates = [node.get("id"), node.get("name"), node.get("type")]
+        for candidate in candidates:
+            if candidate and str(candidate) in prompts and str(prompts[str(candidate)]).strip():
+                return str(prompts[str(candidate)]).strip()
+    return build_default_node_style_prompt(node)
+
+
+def build_default_node_style_prompt(node: dict[str, Any]) -> str:
+    name = str(node.get("name") or "节日")
+    keywords = "、".join(str(item) for item in node.get("keywords", []) if item)
+    colors = "、".join(str(item) for item in node.get("colors", []) if item)
+    visual_direction = str(node.get("visual_direction") or "有节日氛围、干净高级")
+    scenario = node_scenario_hint(node)
+    return f"{name}节点：{visual_direction}；关键词：{keywords}；色彩参考：{colors}。{scenario}"
+
+
+def node_scenario_hint(node: dict[str, Any]) -> str:
+    node_text = f"{node.get('id', '')} {node.get('name', '')} {' '.join(node.get('keywords', []))}"
+    if any(term in node_text for term in ("春节", "除夕", "spring")):
+        return "春节/除夕场景以家庭团圆饭、暖光餐厅、餐边柜或厨房台面为主，产品像家中原有电器一样自然出现。"
+    if any(term in node_text for term in ("元宵", "lantern")):
+        return "元宵场景以灯笼、暖色灯火、团圆餐桌为主，产品放在餐边柜或厨房转角。"
+    if any(term in node_text for term in ("中秋", "mid")):
+        return "中秋场景以月色、团圆、茶点和温暖家居为主，产品作为家庭饮水陪伴自然融入。"
+    if any(term in node_text for term in ("冬至", "立冬", "dong", "lidong")):
+        return "冬日场景以热汤、暖光、家人围坐和室内温暖感为主，产品放在厨房或餐厅边侧。"
+    if any(term in node_text for term in ("国庆", "national")):
+        return "国庆场景以红金喜庆、家庭假期和明亮客餐厅为主，产品不抢节日主体但清晰可见。"
+    if any(term in node_text for term in ("618", "双11", "double")):
+        return "电商节点避免廉价促销感，用清爽现代厨房、茶水间或产品展示空间表达咨询与焕新。"
+    return "根据节点氛围安排真实生活空间，让产品与人物动线、家具和光影关系自然融合。"
+
+
+def build_default_scene_prompt(*, node: dict[str, Any], product: dict[str, Any], payload: PosterTaskCreate) -> str:
+    extra = payload.scene_prompt.strip() or payload.custom_requirement.strip()
+    extra_text = f"用户补充要求：{extra}。" if extra else ""
+    return (
+        f"围绕“{node.get('name', '节日')}”营造中文节日生活场景，先表达祝福、团圆、焕新或陪伴，"
+        f"再让“{product.get('name', '产品')}”作为真实物体自然融入空间。"
+        f"{node_scenario_hint(node)}{extra_text}"
+    )
+
+
+def compose_final_image_prompt(
     *,
     node: dict[str, Any],
     product: dict[str, Any],
     payload: PosterTaskCreate,
+    title: str,
+    subtitle: str,
+    base_style_prompt: str,
+    node_style_prompt: str,
+    scene_prompt: str,
+    typography_prompt: str,
 ) -> str:
-    visual_direction = node.get("visual_direction") or "高级、干净、适合营销传播"
-    colors = "、".join(node.get("colors", []))
-    keywords = "、".join(node.get("keywords", []))
-    user_scene_prompt = payload.scene_prompt.strip() or payload.custom_requirement.strip() or "让产品自然融入节日营销场景"
+    product_points = "、".join(str(item) for item in product.get("selling_points", []) if item)
+    extra = payload.scene_prompt.strip() or payload.custom_requirement.strip()
     return (
-        "请基于我提供的透明产品 PNG 生成一张 1080x1920 竖版营销场景图。"
-        "产品主体必须直接来自我提供的透明产品素材，必须保留真实外观、颜色、结构、比例、材质和细节，"
-        "不要重绘产品，不要改变产品外形。"
-        f"请让产品自然融入与“{node.get('name', '营销节点')}”相关的氛围场景中，"
-        f"视觉方向为“{visual_direction}”，色彩倾向为“{colors}”，关键词包括“{keywords}”。"
-        f"补充场景要求：{user_scene_prompt}。"
-        "可适度加入与节日相关的环境元素，例如端午节可加入粽子、龙舟氛围，"
-        "春节或元宵节可加入团圆饭、灯笼、暖光室内场景，但不要喧宾夺主。"
-        f"产品名称参考：{product.get('name', '')}。"
-        "画面仅生成场景与氛围，不要出现任何文字、Logo、二维码、水印、边框、按钮、海报排版元素。"
-        "请为顶部 Logo 区和底部标题、副标题、二维码、联系方式、底部条区域预留安全区。"
-        "整体风格要高级、干净、和谐，产品要明显可见，并且与背景融洽。"
+        "生成一张 1080x1920 竖版中文节日产品海报。"
+        f"画面节点：{node.get('name', '节日')}。"
+        f"中文艺术字主标题必须写：{title}。"
+        f"中文副标题必须写：{subtitle}。"
+        "文案需要先符合节日氛围，再自然表达产品陪伴和健康饮水场景，不要强硬推销产品功能。"
+        f"统一参考风格：{base_style_prompt}"
+        f"当前节点提示词：{node_style_prompt}"
+        f"具体场景：{scene_prompt}"
+        f"中文艺术字要求：{typography_prompt}"
+        f"产品参考：{product.get('name', '')}，品类：{product.get('category', '')}，参考卖点仅作生活化表达：{product_points}。"
+        "图片模型只会收到一张产品参考图；产品必须保留真实外观、结构、颜色、比例和材质，"
+        "像真实物体一样摆放在餐边柜、厨房台面、客厅边柜或茶水间等合理位置，具有接触面、阴影、遮挡关系和环境光。"
+        "顶部为后期 Logo 保留干净空间，底部为后期宣传条保留空间；画面中不要生成额外 Logo、二维码、水印、价格牌或按钮。"
+        "除产品型号外不要出现英文字母；所有可见文字都应为清晰中文，不要乱码和错别字。"
+        f"{'用户补充需求：' + extra + '。' if extra else ''}"
     )
+
+
+def combine_negative_prompts(*parts: str) -> str:
+    seen: set[str] = set()
+    result: list[str] = []
+    for part in parts:
+        for item in re.split(r"[，,。；;\n]+", part or ""):
+            clean = item.strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                result.append(clean)
+    return "，".join(result)
+
+
+def sanitize_marketing_text(text: str, *, fallback: str, limit: int) -> str:
+    safe = (text or "").strip()
+    for term in COMPLIANCE_RULES["blocked_terms"]:
+        safe = safe.replace(term, "")
+    safe = re.sub(r"\s+", "", safe)
+    if not safe:
+        safe = fallback
+    return safe[:limit]
 
 
 def build_negative_prompt() -> str:
@@ -716,8 +1102,9 @@ def build_negative_prompt() -> str:
         "不要重绘产品，不要改变产品颜色、结构、比例、材质和细节，"
         "不要让产品变形，不要替换为相似产品，不要生成多个产品，"
         "不要裁切掉产品关键结构，不要遮挡产品主体，不要人物手持，"
-        "不要文字，不要汉字，不要英文文案，不要 Logo，不要二维码，不要水印，"
-        "不要边框，不要贴纸，不要价格标签，不要促销字样，不要杂乱背景，"
+        "不要英文文案，不要乱码错字，不要错误汉字，不要硬广口号，不要价格标签，"
+        "不要 Logo，不要二维码，不要水印，不要边框，不要按钮，不要贴纸，"
+        "不要绝对化承诺，不要医疗功效暗示，不要杂乱背景，"
         "不要夸张光效，不要脏污噪点，不要不可控品牌元素。"
     )
 
@@ -741,20 +1128,14 @@ def create_mock_scene_with_product(
     scene_reference_path: Path | None,
     canvas_size: tuple[int, int],
     safe_zones: dict[str, tuple[int, int, int, int]],
+    on_image_title: str,
+    on_image_subtitle: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_image = create_mock_atmosphere_canvas(node=node, canvas_size=canvas_size)
-    if scene_reference_path and scene_reference_path.exists():
-        with Image.open(scene_reference_path) as reference:
-            reference_rgba = ImageOps.fit(
-                reference.convert("RGBA"),
-                canvas_size,
-                method=Image.Resampling.LANCZOS,
-            )
-            reference_rgba = reference_rgba.filter(ImageFilter.GaussianBlur(radius=1.4))
-            base_image = Image.blend(base_image, reference_rgba, 0.24)
 
     add_festive_motifs(base_image, node)
+    add_mock_art_text(base_image, title=on_image_title, subtitle=on_image_subtitle, safe_zones=safe_zones)
     paste_product_into_scene(
         canvas=base_image,
         product_path=product_image_path,
@@ -762,6 +1143,51 @@ def create_mock_scene_with_product(
     )
     add_depth_vignette(base_image)
     base_image.save(path, "PNG")
+
+
+def add_mock_art_text(
+    canvas: Image.Image,
+    *,
+    title: str,
+    subtitle: str,
+    safe_zones: dict[str, tuple[int, int, int, int]],
+) -> None:
+    draw = ImageDraw.Draw(canvas)
+    width, _ = canvas.size
+    top_safe = safe_zones["top_logo"][3]
+    title_font = load_prompt_font(82, bold=True)
+    subtitle_font = load_prompt_font(34, bold=False)
+    title = title or "节日好水相伴"
+    subtitle = subtitle or "把健康饮水融入团圆时刻"
+    title_box = draw.textbbox((0, 0), title, font=title_font)
+    title_x = max(58, (width - (title_box[2] - title_box[0])) // 2)
+    title_y = top_safe + 64
+    draw.text((title_x + 4, title_y + 5), title, font=title_font, fill=(74, 20, 20, 120))
+    draw.text((title_x, title_y), title, font=title_font, fill=(255, 248, 220, 255))
+    subtitle_box = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+    subtitle_x = max(70, (width - (subtitle_box[2] - subtitle_box[0])) // 2)
+    subtitle_y = title_y + 106
+    draw.rounded_rectangle(
+        (subtitle_x - 24, subtitle_y - 12, subtitle_x + subtitle_box[2] - subtitle_box[0] + 24, subtitle_y + 52),
+        radius=24,
+        fill=(255, 255, 255, 74),
+    )
+    draw.text((subtitle_x, subtitle_y), subtitle, font=subtitle_font, fill=(33, 58, 54, 255))
+
+
+def load_prompt_font(size: int, *, bold: bool) -> Any:
+    candidates = [
+        Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("C:/Windows/Fonts/simsun.ttc"),
+    ]
+    for font_name in candidates:
+        try:
+            if font_name.exists():
+                return ImageFont.truetype(str(font_name), size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
 
 
 def create_mock_atmosphere_canvas(
@@ -1010,7 +1436,7 @@ def append_image_constraints(
         "例如春节可生成一家人围坐团圆饭的温暖场景，产品自然放在餐边柜、厨房台面或餐厅角落，不要突兀。"
         "保留参考产品的真实外观、品牌结构、材质和比例，不要把产品变成其他物体。"
         f"顶部和底部预留海报排版安全区：{json.dumps(zones, ensure_ascii=False)}。"
-        "画面本身不要生成任何文字、汉字、英文、Logo、二维码、水印、价格标签或促销标签。"
+        "画面允许生成清晰中文艺术字主标题和中文副文案，但不要生成英文、乱码、错别字、额外 Logo、二维码、水印、价格标签或促销标签。"
         f"负向约束：{negative_prompt}"
     )
 

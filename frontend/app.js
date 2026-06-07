@@ -563,7 +563,11 @@ function renderChoiceGrid(assetType, grid) {
     card.querySelector("strong").textContent = asset.name || asset.file_name || asset.id;
     card.querySelector("small").textContent = asset.asset_type || assetType;
     card.addEventListener("click", () => {
-      state.selectedAssets[assetType] = asset;
+      if (assetType === "qrcode" && state.selectedAssets.qrcode?.id === asset.id) {
+        state.selectedAssets.qrcode = null;
+      } else {
+        state.selectedAssets[assetType] = asset;
+      }
       renderAssetChoices();
       renderSummary();
     });
@@ -1421,17 +1425,28 @@ function renderCompliance() {
 function renderPreviewSelects() {
   const sourceAssets = state.sourceMode === "scene_image" ? (state.sceneAsset ? [state.sceneAsset] : []) : state.productAssets;
   renderSelectFromAssets(els.previewProductAssetSelect, sourceAssets, state.sourceMode === "scene_image" ? "整张场景图" : "产品图");
-  renderSelectFromAssets(els.previewQrcodeSelect, state.systemAssets.qrcode, "二维码", state.selectedAssets.qrcode?.id);
+  renderSelectFromAssets(els.previewQrcodeSelect, state.systemAssets.qrcode, "二维码", state.selectedAssets.qrcode?.id, {
+    allowNone: true,
+    noneLabel: "不单独添加二维码",
+  });
   renderSelectFromAssets(els.previewBottomBarSelect, state.systemAssets.bottom_bar, "底部条", state.selectedAssets.bottom_bar?.id);
 }
 
-function renderSelectFromAssets(select, assets, label, selectedId) {
+function renderSelectFromAssets(select, assets, label, selectedId, options = {}) {
   select.innerHTML = "";
+  if (options.allowNone) {
+    const noneOption = document.createElement("option");
+    noneOption.value = "";
+    noneOption.textContent = options.noneLabel || `不选择${label}`;
+    select.append(noneOption);
+  }
   if (!assets.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = `暂无${label}`;
-    select.append(option);
+    if (!options.allowNone) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = `暂无${label}`;
+      select.append(option);
+    }
     return;
   }
   assets.forEach((asset, index) => {
@@ -1440,7 +1455,7 @@ function renderSelectFromAssets(select, assets, label, selectedId) {
     option.textContent = asset.name || asset.file_name || `${label}${index + 1}`;
     select.append(option);
   });
-  select.value = selectedId || assets[0]?.id || "";
+  select.value = selectedId || (options.allowNone ? "" : assets[0]?.id || "");
 }
 
 function scheduleComplianceCheck() {
