@@ -45,10 +45,11 @@ def create_task(payload: PosterTaskCreate, background_tasks: BackgroundTasks) ->
     asset_mode, product_assets, scene_asset = resolve_task_assets(payload)
 
     logo_asset_id = payload.logo_asset_id or "asset_logo_original"
-    qrcode_asset_id = payload.qrcode_asset_id or "asset_qrcode_wechat"
+    qrcode_asset_id = payload.qrcode_asset_id
     bottom_bar_asset_id = payload.bottom_bar_asset_id or "asset_bottom_default"
     require_asset(logo_asset_id, "logo")
-    require_asset(qrcode_asset_id, "qrcode")
+    if qrcode_asset_id:
+        require_asset(qrcode_asset_id, "qrcode")
     require_asset(bottom_bar_asset_id, "bottom_bar")
 
     validate_copy_preference(payload)
@@ -58,7 +59,7 @@ def create_task(payload: PosterTaskCreate, background_tasks: BackgroundTasks) ->
         "task_id": task_id,
         "status": "pending",
         "progress": 0,
-        "current_step": "Waiting for generation",
+        "current_step": "等待生成",
         "poster": None,
         "error": None,
         "request": payload.model_dump(),
@@ -143,18 +144,18 @@ def get_task_composition(task_id: str) -> dict[str, Any]:
 
 def run_task(task_id: str) -> None:
     try:
-        update_task(task_id, status="processing", progress=12, current_step="Reading uploaded assets")
+        update_task(task_id, status="processing", progress=12, current_step="正在读取上传素材")
         time.sleep(0.05)
-        update_task(task_id, progress=35, current_step="Generating scene prompt and copy")
+        update_task(task_id, progress=35, current_step="正在生成场景提示词和文案")
         prepare_task_copy(task_id)
         time.sleep(0.05)
-        update_task(task_id, progress=62, current_step="Fusing product into festival scene")
+        update_task(task_id, progress=62, current_step="正在融合产品与节日场景")
         poster, fusion = compose_poster(task_id)
         update_task(
             task_id,
             status="success",
             progress=100,
-            current_step="Generation completed",
+            current_step="生成完成",
             poster=poster,
             fusion=fusion,
             error=None,
@@ -164,7 +165,7 @@ def run_task(task_id: str) -> None:
             task_id,
             status="failed",
             progress=100,
-            current_step="Generation failed",
+            current_step="生成失败",
             error={"code": exc.code, "message": exc.message, "details": exc.details},
         )
     except Exception as exc:
@@ -172,7 +173,7 @@ def run_task(task_id: str) -> None:
             task_id,
             status="failed",
             progress=100,
-            current_step="Generation failed",
+            current_step="生成失败",
             error={"code": "GENERATION_FAILED", "message": "海报生成失败，请检查素材后重试", "details": {"error": str(exc)}},
         )
 
@@ -256,7 +257,7 @@ def rerender_task(task_id: str, payload: PosterTaskRerenderRequest) -> dict[str,
             poster=poster,
             fusion=fusion,
             compliance=compliance,
-            current_step="Preview copy rerendered",
+            current_step="预览文案已重新合成",
         )
     return get_task(task_id)
 
@@ -286,7 +287,7 @@ def compose_poster(
     scene_reference_asset = require_asset(scene_reference_asset_id, "scene_image") if scene_reference_asset_id else None
     scene_asset = require_asset(resolved["scene_asset_id"], "scene_image") if resolved.get("scene_asset_id") else None
     logo_asset = require_asset(resolved["logo_asset_id"], "logo")
-    qrcode_asset = require_asset(resolved["qrcode_asset_id"], "qrcode")
+    qrcode_asset = require_asset(resolved["qrcode_asset_id"], "qrcode") if resolved.get("qrcode_asset_id") else None
     bottom_bar_asset = require_asset(resolved["bottom_bar_asset_id"], "bottom_bar")
 
     output_dir = GENERATED_DIR / datetime.now().strftime("%Y%m%d") / task_id
@@ -339,7 +340,8 @@ def compose_poster(
         contact_text=payload.contact_text,
         custom_requirement=payload.custom_requirement,
     )
-    paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout)
+    if qrcode_asset:
+        paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout)
 
     rgb = canvas.convert("RGB")
     rgb.save(poster_path, "JPEG", quality=92, optimize=True)
@@ -366,6 +368,7 @@ def compose_poster(
             payload=payload,
             product_asset=product_asset,
             scene_asset=scene_asset or scene_reference_asset,
+            qrcode_asset=qrcode_asset,
             fusion_meta=fusion_meta,
             layout=layout,
         ),
@@ -595,6 +598,7 @@ def build_composition_fusion(
     payload: PosterTaskCreate,
     product_asset: dict[str, Any] | None,
     scene_asset: dict[str, Any] | None,
+    qrcode_asset: dict[str, Any] | None,
     fusion_meta: dict[str, Any],
     layout: dict[str, Any],
 ) -> dict[str, Any]:
@@ -626,7 +630,7 @@ def build_composition_fusion(
             "title": list(layout["title"]["box"]),
             "subtitle": list(layout["subtitle"]["box"]),
             "contact": list(layout["contact"]["box"]),
-            "qrcode": list(layout["qrcode"]["card_box"]),
+            "qrcode": list(layout["qrcode"]["card_box"]) if qrcode_asset else None,
             "bottom_bar": list(layout["bottom_bar"]["box"]),
         },
         "scene_fit": fusion_meta["fit"],

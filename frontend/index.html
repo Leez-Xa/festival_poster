@@ -19,7 +19,7 @@
             <p class="top-subtitle">选节点、传素材、生成海报、合规下载，一条链路完成。</p>
           </div>
         </div>
-        <nav class="top-actions" aria-label="主要入口">
+        <nav class="top-actions" aria-label="主要入口" hidden>
           <button class="ghost-button" type="button" data-open-history disabled title="MVP阶段暂不开放完整历史记录">最近生成</button>
           <label class="api-field">
             <span>API地址</span>
@@ -34,7 +34,7 @@
       </header>
 
       <main>
-        <section class="command-strip" aria-label="MVP能力概览">
+        <section class="command-strip" aria-label="MVP能力概览" hidden>
           <article>
             <span>默认画幅</span>
             <strong>1080 × 1920</strong>
@@ -92,7 +92,7 @@
               </div>
               <div>
                 <dt>系统素材</dt>
-                <dd id="summarySystemAssets">Logo、二维码、底部条未完整选择</dd>
+                <dd id="summarySystemAssets">Logo、底部条未完整选择；二维码默认不单独添加</dd>
               </div>
               <div>
                 <dt>任务状态</dt>
@@ -201,11 +201,12 @@
 
                 <section class="asset-section">
                   <div class="section-title-row">
-                    <h3>二维码</h3>
+                    <h3>额外二维码（可选）</h3>
                     <button class="ghost-button small" type="button" data-upload-trigger="qrcode">上传二维码</button>
                   </div>
                   <input class="system-upload" data-upload-input="qrcode" type="file" accept="image/*" hidden />
                   <div class="choice-grid" id="qrcodeGrid"></div>
+                  <p class="hint">底部宣传条已含二维码时，默认不再单独叠加二维码。</p>
                 </section>
 
                 <section class="asset-section">
@@ -317,8 +318,8 @@
               <div class="screen-header">
                 <div>
                   <p class="eyebrow">海报预览</p>
-                  <h2 id="previewTitle">检查结果并下载 JPG</h2>
-                  <p>确认海报、文案和合规结果后，再下载发布用图片。</p>
+                  <h2 id="previewTitle">预览海报并下载 JPG</h2>
+                  <p>确认图片无误后，下载发布用海报。</p>
                 </div>
                 <button class="secondary-button" type="button" id="newTaskBtn">新建任务</button>
               </div>
@@ -330,7 +331,7 @@
                 </div>
 
                 <div class="preview-controls">
-                  <section>
+                  <section hidden>
                     <h3>后端结果</h3>
                     <dl class="result-list">
                       <div>

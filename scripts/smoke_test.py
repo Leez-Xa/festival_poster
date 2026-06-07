@@ -162,7 +162,7 @@ def main() -> None:
                 "scene_asset_id": None,
                 "product_asset_ids": [asset_id],
                 "logo_asset_id": logos["data"]["items"][0]["id"],
-                "qrcode_asset_id": qrcodes["data"]["items"][0]["id"],
+                "qrcode_asset_id": None,
                 "bottom_bar_asset_id": bottom_bars["data"]["items"][0]["id"],
                 "contact_text": "扫码咨询当地销售顾问",
                 "scene_prompt": "请让产品融入立冬暖色营销场景，产品明显可见并与背景和谐",

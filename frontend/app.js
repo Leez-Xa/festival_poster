@@ -1,8 +1,17 @@
 const TASK_STATUSES = new Set(["pending", "processing", "success", "failed"]);
-const AI_IMAGE_WARNING_MS = 120000;
+const AI_IMAGE_WARNING_MS = 10000;
 const AI_IMAGE_MAX_POLL_MS = 240000;
 const POLL_INTERVAL_MS = 2500;
 const POLL_INTERVAL_SLOW_MS = 5000;
+const TASK_STEP_LABELS = {
+  "Waiting for generation": "等待生成",
+  "Reading uploaded assets": "正在读取上传素材",
+  "Generating scene prompt and copy": "正在生成场景提示词和文案",
+  "Fusing product into festival scene": "正在融合产品与节日场景",
+  "Generation completed": "生成完成",
+  "Generation failed": "生成失败",
+  "Preview copy rerendered": "预览文案已重新合成",
+};
 const API_BASE_FALLBACK = (() => {
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   if (isHttpPage && location.hostname && !["localhost", "127.0.0.1"].includes(location.hostname)) {
@@ -16,7 +25,7 @@ const API_BASE_FALLBACK = (() => {
 
 const state = {
   currentScreen: "nodes",
-  apiBase: localStorage.getItem("festivalPoster.apiBase") || API_BASE_FALLBACK,
+  apiBase: API_BASE_FALLBACK,
   apiToken: localStorage.getItem("festivalPoster.apiToken") || "",
   nodes: [],
   selectedNode: null,
@@ -282,8 +291,8 @@ function renderSummary() {
 
   const pieces = [];
   pieces.push(state.selectedAssets.logo ? "Logo已选" : "Logo未选");
-  pieces.push(state.selectedAssets.qrcode ? "二维码已选" : "二维码未选");
   pieces.push(state.selectedAssets.bottom_bar ? "底部条已选" : "底部条未选");
+  pieces.push(state.selectedAssets.qrcode ? "已额外添加二维码" : "二维码默认不单独添加");
   els.summarySystemAssets.textContent = pieces.join("，");
 
   if (!state.activeTask) {
@@ -319,11 +328,14 @@ function statusLabel(status) {
   return map[status] || status || "未知";
 }
 
+function taskStepLabel(step) {
+  return TASK_STEP_LABELS[step] || step || "";
+}
+
 function canGoConfig() {
   return (
     hasRequiredSourceAsset() &&
     Boolean(state.selectedAssets.logo) &&
-    Boolean(state.selectedAssets.qrcode) &&
     Boolean(state.selectedAssets.bottom_bar)
   );
 }
@@ -453,7 +465,7 @@ function useCustomNode() {
 
 async function loadSystemAssets() {
   els.reloadAssetsBtn.disabled = true;
-  showMessage(els.uploadMessage, "正在读取系统 Logo、二维码和底部宣传条...");
+  showMessage(els.uploadMessage, "正在读取系统 Logo、额外二维码和底部宣传条...");
   try {
     const [logos, qrcodes, bottomBars] = await Promise.all([
       loadAssetsByType("logo"),
@@ -465,12 +477,10 @@ async function loadSystemAssets() {
     state.systemAssets.bottom_bar = bottomBars;
 
     selectFirstMissing("logo");
-    selectFirstMissing("qrcode");
     selectFirstMissing("bottom_bar");
 
     const missing = [];
     if (!logos.length) missing.push("Logo");
-    if (!qrcodes.length) missing.push("二维码");
     if (!bottomBars.length) missing.push("底部宣传条");
     showMessage(
       els.uploadMessage,
@@ -515,7 +525,21 @@ function renderAssetChoices() {
 function renderChoiceGrid(assetType, grid) {
   grid.innerHTML = "";
   const assets = state.systemAssets[assetType];
+  if (assetType === "qrcode") {
+    const noneCard = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
+    noneCard.classList.toggle("selected", !state.selectedAssets.qrcode);
+    noneCard.querySelector(".choice-thumb").textContent = "默认";
+    noneCard.querySelector("strong").textContent = "不单独添加二维码";
+    noneCard.querySelector("small").textContent = "使用底部宣传条中的二维码信息";
+    noneCard.addEventListener("click", () => {
+      state.selectedAssets.qrcode = null;
+      renderAssetChoices();
+      renderSummary();
+    });
+    grid.append(noneCard);
+  }
   if (!assets.length) {
+    if (assetType === "qrcode") return;
     const empty = document.createElement("p");
     empty.className = "hint";
     empty.textContent = "后端暂无素材。";
@@ -916,7 +940,7 @@ function buildCustomRequirement() {
 
 async function createPosterTask() {
   if (!canCreateTask()) {
-    showMessage(els.taskMessage, "请先完成节点、产品、产品图或场景图、Logo、二维码和底部条选择。", "warning");
+    showMessage(els.taskMessage, "请先完成节点、产品、产品图或场景图、Logo和底部条选择。", "warning");
     return;
   }
   const copyMode = currentCopyMode();
@@ -938,7 +962,7 @@ async function createPosterTask() {
     template_id: els.templateInput.value.trim() || "template_v1_vertical_standard",
     ...assetPayload,
     logo_asset_id: state.selectedAssets.logo.id,
-    qrcode_asset_id: state.selectedAssets.qrcode.id,
+    qrcode_asset_id: state.selectedAssets.qrcode?.id || null,
     bottom_bar_asset_id: state.selectedAssets.bottom_bar.id,
     contact_text: els.contactInput.value.trim(),
     scene_prompt: els.customRequirementInput.value.trim(),
@@ -983,7 +1007,7 @@ function updatePollingPanel(task) {
   const progress = clamp(Number(task.progress || 0), 0, 100);
   els.progressBar.style.width = `${progress}%`;
   els.pollingStatus.textContent = `${statusLabel(task.status)} · ${progress}%`;
-  els.pollingStep.textContent = task.current_step || "";
+  els.pollingStep.textContent = taskStepLabel(task.current_step);
 }
 
 function startPolling(taskId) {
@@ -1106,7 +1130,7 @@ function handleTaskUpdate(data, startedAt) {
   }
 
   if (Date.now() - startedAt > AI_IMAGE_WARNING_MS) {
-    showMessage(els.taskMessage, "生成已超过120秒，任务仍在轮询中，可继续等待。", "warning");
+    showMessage(els.taskMessage, "生图时长较长，请稍后。AI 正在处理海报画面，完成后会自动进入预览。", "warning");
   }
   scheduleNextPoll(data.task_id, startedAt);
 }
