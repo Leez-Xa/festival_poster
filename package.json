@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "start": "start.bat",
+    "start:demo": "start_demo.bat",
     "vercel:version": "vercel --version",
     "vercel:login": "vercel --global-config storage/vercel-config login",
     "vercel:whoami": "vercel --global-config storage/vercel-config whoami",
