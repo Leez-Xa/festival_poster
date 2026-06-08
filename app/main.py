@@ -24,10 +24,12 @@ from app.config import (
     ensure_storage_dirs,
 )
 from app.db import init_db, list_products, mark_interrupted_tasks
-from app.models import ComplianceCheckRequest, PosterTaskCreate, PosterTaskRerenderRequest
+from app.models import ComplianceCheckRequest, OneClickIntentRequest, OneClickPosterTaskCreate, PosterTaskCreate, PosterTaskRerenderRequest
 from app.responses import ApiError, api_error_handler, success_response, unhandled_error_handler
 from app.services.assets import get_asset, list_assets, save_upload
 from app.services.compliance import check_copy_with_rewrite
+from app.services.intent_parser import parse_one_click_intent
+from app.services.one_click import create_one_click_poster_task
 from app.services.poster import create_task, get_task, get_task_composition, rerender_task
 from app.services.seed import initialize_seed_assets
 from config.seed_data import MARKETING_NODES
@@ -176,6 +178,23 @@ async def post_poster_task(
     _: None = Depends(require_api_access),
 ) -> dict[str, object]:
     return success_response(create_task(payload, background_tasks))
+
+
+@app.post(f"{API_PREFIX}/one-click-intent")
+async def post_one_click_intent(
+    payload: OneClickIntentRequest,
+    _: None = Depends(require_api_access),
+) -> dict[str, object]:
+    return success_response(parse_one_click_intent(payload.raw_instruction))
+
+
+@app.post(f"{API_PREFIX}/one-click-poster-tasks")
+async def post_one_click_poster_task(
+    payload: OneClickPosterTaskCreate,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_api_access),
+) -> dict[str, object]:
+    return success_response(create_one_click_poster_task(payload, background_tasks))
 
 
 @app.get(f"{API_PREFIX}/poster-tasks/{{task_id}}")

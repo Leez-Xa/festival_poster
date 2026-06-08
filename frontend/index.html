@@ -7,6 +7,7 @@
     <title>朴道节日海报AI员工</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./workbench.css?v=20260607-workbench3" />
+    <link rel="stylesheet" href="./one-click.css?v=20260608-oneclick1" />
   </head>
   <body>
     <div class="app-shell">
@@ -37,6 +38,102 @@
       </header>
 
       <main>
+        <section class="mode-switch" aria-label="生成模式">
+          <div>
+            <p class="eyebrow">生成入口</p>
+            <h2>一句话生成海报</h2>
+          </div>
+          <div class="mode-tabs" role="tablist" aria-label="生成模式切换">
+            <button class="mode-tab active" type="button" role="tab" aria-selected="true" data-mode-target="one-click">一键生成</button>
+            <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode-target="manual">手动配置</button>
+          </div>
+        </section>
+
+        <section class="one-click-page" id="oneClickPage" aria-label="一键生图">
+          <div class="one-click-main">
+            <section class="one-click-card one-click-command" aria-labelledby="oneClickTitle">
+              <div class="one-click-heading">
+                <div>
+                  <p class="eyebrow">自然语言指令</p>
+                  <h2 id="oneClickTitle">输入一句话，自动解析并生成节日海报</h2>
+                </div>
+                <span class="one-click-badge">Beta</span>
+              </div>
+              <label class="one-click-input-wrap" for="oneClickPrompt">
+                <span>生图指令</span>
+                <textarea id="oneClickPrompt" rows="6" maxlength="600" placeholder="例如：端午节给朴道饮水机做一张朋友圈竖版海报，清爽绿色，有粽叶和水波纹，突出健康饮水和扫码咨询。"></textarea>
+              </label>
+              <div class="one-click-actions">
+                <button class="secondary-button" type="button" id="oneClickParseBtn">先解析</button>
+                <button class="primary-button" type="button" id="oneClickGenerateBtn">一键生成</button>
+              </div>
+              <div class="state-message" id="oneClickMessage" hidden></div>
+            </section>
+
+            <section class="one-click-card" aria-labelledby="oneClickIntentTitle">
+              <div class="section-title-row">
+                <h3 id="oneClickIntentTitle">解析结果</h3>
+                <span class="one-click-muted" id="oneClickIntentState">等待输入</span>
+              </div>
+              <div class="intent-tags" id="oneClickTags">
+                <span>节日活动</span>
+                <span>产品</span>
+                <span>风格</span>
+                <span>画面元素</span>
+                <span>文案方向</span>
+              </div>
+              <dl class="one-click-detail-list" id="oneClickIntentDetails"></dl>
+            </section>
+
+            <section class="one-click-card" aria-labelledby="oneClickProgressTitle">
+              <div class="section-title-row">
+                <h3 id="oneClickProgressTitle">任务进度</h3>
+                <span class="one-click-muted" id="oneClickTaskId">未创建</span>
+              </div>
+              <div class="one-click-progress">
+                <div class="progress-track" aria-hidden="true">
+                  <span id="oneClickProgressBar"></span>
+                </div>
+                <div class="polling-meta">
+                  <strong id="oneClickStatus">等待创建任务</strong>
+                  <span id="oneClickStep"></span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="one-click-preview one-click-card" aria-label="一键生图预览">
+            <div class="poster-rail-header">
+              <div>
+                <p class="eyebrow">海报预览</p>
+                <h2>生成结果</h2>
+              </div>
+              <span>JPG</span>
+            </div>
+            <div class="one-click-poster-frame" id="oneClickPosterFrame">
+              <div class="poster-empty" id="oneClickPosterEmpty">任务完成后显示海报</div>
+              <img id="oneClickPosterImage" alt="一键生成的节日海报预览" hidden />
+            </div>
+            <dl class="one-click-result-list">
+              <div>
+                <dt>返回文案</dt>
+                <dd id="oneClickCopy">等待后端返回</dd>
+              </div>
+              <div>
+                <dt>海报地址</dt>
+                <dd id="oneClickPosterUrl">等待后端返回</dd>
+              </div>
+              <div>
+                <dt>错误提示</dt>
+                <dd id="oneClickError">无</dd>
+              </div>
+            </dl>
+            <div class="one-click-downloads">
+              <button class="primary-button" type="button" id="oneClickDownloadBtn" disabled>下载JPG</button>
+              <a class="secondary-button" id="oneClickOpenBtn" href="#" target="_blank" rel="noreferrer" hidden>打开预览</a>
+            </div>
+          </aside>
+        </section>
         <section class="command-strip" aria-label="MVP能力概览" hidden>
           <article>
             <span>默认画幅</span>
@@ -501,5 +598,6 @@
     </template>
 
     <script src="./app.js?v=20260607-workbench3" defer></script>
+    <script src="./one-click.js?v=20260608-oneclick1" defer></script>
   </body>
 </html>

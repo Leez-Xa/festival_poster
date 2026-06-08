@@ -125,7 +125,7 @@ const els = {
   progressBar: document.querySelector("#progressBar"),
   pollingStatus: document.querySelector("#pollingStatus"),
   pollingStep: document.querySelector("#pollingStep"),
-  posterFrame: document.querySelector(".poster-frame"),
+  posterFrame: document.querySelector("#posterImage")?.closest(".poster-frame"),
   posterEmpty: document.querySelector("#posterEmpty"),
   posterImage: document.querySelector("#posterImage"),
   resultTaskStatus: document.querySelector("#resultTaskStatus"),

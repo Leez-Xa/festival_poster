@@ -331,6 +331,59 @@ def compose_poster(
         fusion_meta["rerender_product_overlay"] = local_product_overlay
 
     ai_handles_copy = bool(fusion_meta.get("ai_handles_copy"))
+    ai_final_only = should_use_ai_final_image(payload, fusion_meta, reuse_existing_scene)
+    if ai_final_only:
+        poster_copy = {
+            "title": fusion_meta.get("on_image_title") or copy["title"],
+            "subtitle": fusion_meta.get("on_image_subtitle") or copy["subtitle"],
+        }
+        rgb = base_canvas.convert("RGB")
+        rgb.save(poster_path, "JPEG", quality=94, optimize=True)
+        thumb = ImageOps.contain(rgb.copy(), (360, 640))
+        thumb.save(thumbnail_path, "JPEG", quality=88, optimize=True)
+        background_asset = fusion_meta.get("background_asset")
+        composition = {
+            "task_id": task_id,
+            "template_id": payload.template_id,
+            "node_id": payload.node_id,
+            "product_id": payload.product_id,
+            "asset_ids": {
+                "product_asset_ids": payload.product_asset_ids,
+                "product_asset_id": product_asset["id"] if product_asset else None,
+                "scene_asset_id": scene_asset["id"] if scene_asset else None,
+                "scene_reference_asset_id": scene_reference_asset["id"] if scene_reference_asset else None,
+                **resolved,
+                "background_asset_id": background_asset["id"] if background_asset else None,
+            },
+            "copy": {
+                **copy,
+                **poster_copy,
+                "source": "ai_final_image",
+            },
+            "compliance": compliance_override or task.get("compliance"),
+            "fusion": build_composition_fusion(
+                payload=payload,
+                product_asset=product_asset,
+                scene_asset=scene_asset or scene_reference_asset,
+                qrcode_asset=qrcode_asset,
+                fusion_meta={**fusion_meta, "final_layout_engine": "ai_final_image_no_local_overlay"},
+                layout=layout,
+            ),
+        }
+        composition_path.write_text(json.dumps(composition, ensure_ascii=False, indent=2), encoding="utf-8")
+        poster = {
+            "id": new_id("poster"),
+            "title": f"{node['name']}_poster_{datetime.now().strftime('%Y%m%d')}",
+            "jpg_url": public_storage_url(poster_path),
+            "thumbnail_url": public_storage_url(thumbnail_path),
+            "width": CANVAS_SIZE[0],
+            "height": CANVAS_SIZE[1],
+            "file_size_bytes": poster_path.stat().st_size,
+            "composition_json_url": f"/api/v1/poster-tasks/{task_id}/composition",
+            "copy": poster_copy,
+        }
+        return poster, composition["fusion"]
+
     ai_handles_brand_assets = fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
     canvas = base_canvas.convert("RGBA") if ai_handles_copy else apply_layout_panels(base_canvas, layout)
     draw = ImageDraw.Draw(canvas)
@@ -404,6 +457,18 @@ def compose_poster(
         "copy": poster_copy,
     }
     return poster, composition["fusion"]
+
+
+def should_use_ai_final_image(payload: PosterTaskCreate, fusion_meta: dict[str, Any], reuse_existing_scene: bool) -> bool:
+    if reuse_existing_scene:
+        return False
+    if payload.creation_mode != "one_click":
+        return False
+    if fusion_meta.get("status") != "ai_generated":
+        return False
+    if not fusion_meta.get("generated_image_contains_product"):
+        return False
+    return bool(fusion_meta.get("ai_handles_copy") or fusion_meta.get("ai_receives_brand_assets"))
 
 
 def build_scene_canvas(*, scene_asset: dict[str, Any]) -> tuple[Image.Image, dict[str, Any], bool]:
@@ -501,6 +566,8 @@ def build_ai_scene_canvas(
                 "base_style_prompt": fusion.base_style_prompt,
                 "node_style_prompt": fusion.node_style_prompt,
                 "final_image_prompt": fusion.final_image_prompt or fusion.prompt,
+                "asset_roles": fusion.asset_roles,
+                "qrcode_policy": fusion.qrcode_policy,
                 "reference_analysis_fallback_used": fusion.reference_analysis_fallback_used,
                 "ai_receives_brand_assets": fusion.ai_receives_brand_assets,
                 "brand_asset_roles": fusion.brand_asset_roles,
@@ -693,6 +760,8 @@ def build_composition_fusion(
         "base_style_prompt": fusion_meta.get("base_style_prompt"),
         "node_style_prompt": fusion_meta.get("node_style_prompt"),
         "final_image_prompt": fusion_meta.get("final_image_prompt") or fusion_meta["positive_prompt"],
+        "asset_roles": fusion_meta.get("asset_roles") or ["product"],
+        "qrcode_policy": fusion_meta.get("qrcode_policy") or "reserve_clean_area_for_exact_overlay",
         "on_image_title": fusion_meta.get("on_image_title"),
         "on_image_subtitle": fusion_meta.get("on_image_subtitle"),
         "reference_analysis_fallback_used": bool(fusion_meta.get("reference_analysis_fallback_used", True)),
@@ -706,7 +775,8 @@ def build_composition_fusion(
             "generated_image_contains_product",
             fusion_meta["mode"] in {"scene_with_product", "prebuilt_scene_image", "local_mock_composite", "image_edit_json_reference"},
         ),
-        "final_layout_engine": (
+        "final_layout_engine": fusion_meta.get("final_layout_engine")
+        or (
             "ai_scene_with_exact_brand_protection"
             if fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
             else "pillow_template_overlay"

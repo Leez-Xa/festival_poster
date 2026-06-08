@@ -1,6 +1,7 @@
 .env
 .venv/
 node_modules/
+.tmp-npm-cache/
 __pycache__/
 *.py[cod]
 .pytest_cache/

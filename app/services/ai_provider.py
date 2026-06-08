@@ -69,6 +69,8 @@ class ScenePromptResult:
     node_style_prompt: str = ""
     final_image_prompt: str = ""
     reference_analysis_fallback_used: bool = True
+    asset_roles: list[str] = field(default_factory=lambda: ["product"])
+    qrcode_policy: str = "reserve_clean_area_for_exact_overlay"
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +85,8 @@ class ScenePromptResult:
             "node_style_prompt": self.node_style_prompt,
             "final_image_prompt": self.final_image_prompt or self.positive_prompt,
             "reference_analysis_fallback_used": self.reference_analysis_fallback_used,
+            "asset_roles": self.asset_roles,
+            "qrcode_policy": self.qrcode_policy,
         }
 
 
@@ -116,6 +120,8 @@ class SceneFusionResult:
     brand_asset_roles: list[str] = field(default_factory=list)
     protected_brand_asset_ids: dict[str, str] = field(default_factory=dict)
     brand_protection_mode: str = "none"
+    asset_roles: list[str] = field(default_factory=lambda: ["product"])
+    qrcode_policy: str = "reserve_clean_area_for_exact_overlay"
 
 
 @dataclass
@@ -394,6 +400,8 @@ class MockBridgeAiProvider(AiProvider):
             brand_asset_roles=[asset.role for asset in brand_reference_assets],
             protected_brand_asset_ids=brand_asset_id_map(brand_reference_assets),
             brand_protection_mode="ai_fusion_with_exact_final_overlay" if brand_reference_assets else "none",
+            asset_roles=build_asset_roles([asset.role for asset in brand_reference_assets]),
+            qrcode_policy=build_qrcode_policy([asset.role for asset in brand_reference_assets]),
         )
 
     def _generate_background_only(
@@ -513,8 +521,9 @@ class OpenAICompatibleAiProvider(AiProvider):
                             "你是中文节日产品海报的生图提示词导演，只返回 JSON，不要 Markdown。"
                             "图片模型只会收到一张产品参考图，不会收到节日参考海报图。"
                             "你必须把参考海报提示词库、当前节点、产品资料和用户需求整合成最终中文生图提示词。"
+                            "提示词必须强调整张海报的统一设计感，让产品、节日元素、标题、品牌区、底部区和整体色调自然融合。"
                             "最终画面允许生成中文主标题、副标题和艺术字，但语气必须先有节日氛围，再自然带出产品陪伴，"
-                            "不要强硬推销，不要绝对化宣传，不要医疗功效承诺。"
+                            "不要强硬推销，不要绝对化宣传，不要医疗功效承诺，不要让素材像机械贴片。"
                         ),
                     },
                     {
@@ -525,9 +534,9 @@ class OpenAICompatibleAiProvider(AiProvider):
                                 "required_schema": {
                                     "on_image_title": "不超过18个中文字符，适合艺术字主标题",
                                     "on_image_subtitle": "不超过42个中文字符，柔性带出产品陪伴",
-                                    "scene_prompt": "节日氛围、人物/空间/产品自然融入方式",
-                                    "typography_prompt": "中文艺术字风格、位置、层级、可读性要求",
-                                    "negative_prompt": "禁止英文、乱码、硬广、医疗功效、额外Logo、二维码、水印、产品变形",
+                                    "scene_prompt": "节日氛围、人物/空间/产品自然融入方式、Logo/底部宣传条/二维码预留或融合方式、整体色调统一方式",
+                                    "typography_prompt": "中文艺术字风格、位置、层级、可读性要求，与节日元素和产品画面统一",
+                                    "negative_prompt": "禁止英文、乱码、硬广、医疗功效、额外Logo、额外二维码、水印、产品变形、机械贴片、伪造品牌元素",
                                 },
                                 "reference_prompt_library": reference_library,
                                 "rough_copy": rough_copy,
@@ -540,7 +549,8 @@ class OpenAICompatibleAiProvider(AiProvider):
                                     "最终画面是 1080x1920 竖版中文节日产品海报。",
                                     "图片模型只接收产品图，请用文字描述参考海报风格，不要要求模型读取第二张参考图。",
                                     "产品必须像真实物体一样融入场景，有接触面、阴影、环境光和合理比例。",
-                                    "顶部预留 Logo 区，底部预留底部宣传条区；不要生成额外 Logo 和二维码。",
+                                    "顶部预留或融合 Logo 区，底部预留或融合底部宣传条区；如果没有收到品牌参考图，不要生成 Logo、二维码或宣传条。",
+                                    "二维码采用保真策略：只预留清晰高对比区域，或使用参考二维码的周边视觉但允许后处理精确替换。",
                                     "可生成中文艺术字主标题和副标题；除产品型号外不要出现英文字母。",
                                 ],
                             },
@@ -587,6 +597,8 @@ class OpenAICompatibleAiProvider(AiProvider):
         image_path = output_dir / "ai_scene.png"
         prepared_brand_assets = prepare_brand_reference_images(brand_reference_assets, output_dir)
         brand_roles = [asset.role for asset in prepared_brand_assets]
+        asset_roles = build_asset_roles(brand_roles)
+        qrcode_policy = build_qrcode_policy(brand_roles)
         negative_prompt = (
             relax_negative_prompt_for_brand_assets(prompt_result.negative_prompt)
             if prepared_brand_assets
@@ -623,6 +635,7 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "no_extra_qrcode": True,
                     "no_distorted_brand_mark": True,
                     "no_unreadable_qrcode": True,
+                    "qrcode_policy": qrcode_policy,
                     "no_watermark": True,
                 },
                 "metadata": {
@@ -632,7 +645,9 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "on_image_title": prompt_result.on_image_title,
                     "on_image_subtitle": prompt_result.on_image_subtitle,
                     "reference_prompt_source": prompt_result.reference_prompt_source,
-                    "reference_image_roles": ["product", *brand_roles],
+                    "reference_image_roles": asset_roles,
+                    "asset_roles": asset_roles,
+                    "qrcode_policy": qrcode_policy,
                     "brand_protection_mode": "ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
                 },
             }
@@ -658,7 +673,9 @@ class OpenAICompatibleAiProvider(AiProvider):
                     "quality": self.settings.image_quality,
                     "output_format": self.settings.image_output_format,
                     "response_format": self.settings.image_response_format,
-                    "reference_image_roles": json.dumps(["product", *brand_roles], ensure_ascii=False),
+                    "reference_image_roles": json.dumps(asset_roles, ensure_ascii=False),
+                    "asset_roles": json.dumps(asset_roles, ensure_ascii=False),
+                    "qrcode_policy": qrcode_policy,
                     "brand_protection_mode": "ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
                 },
                 image_files=[transparent_product_png, *[asset.path for asset in prepared_brand_assets]],
@@ -687,6 +704,8 @@ class OpenAICompatibleAiProvider(AiProvider):
             brand_asset_roles=brand_roles,
             protected_brand_asset_ids=brand_asset_id_map(brand_reference_assets),
             brand_protection_mode="ai_fusion_with_exact_final_overlay" if prepared_brand_assets else "none",
+            asset_roles=asset_roles,
+            qrcode_policy=qrcode_policy,
         )
 
     def _generate_background_only(
@@ -1037,6 +1056,8 @@ def build_scene_prompt_result(
         node_style_prompt=node_style_prompt,
         final_image_prompt=positive_prompt,
         reference_analysis_fallback_used=bool(reference_library.get("reference_analysis_fallback_used", True)),
+        asset_roles=["product"],
+        qrcode_policy=build_qrcode_policy([]),
     )
 
 
@@ -1106,6 +1127,8 @@ def compose_final_image_prompt(
         f"中文艺术字主标题必须写：{title}。"
         f"中文副标题必须写：{subtitle}。"
         "文案需要先符合节日氛围，再自然表达产品陪伴和健康饮水场景，不要强硬推销产品功能。"
+        "整体必须像同一位设计师完成的一张完整海报：产品、节日元素、标题文字、留白、色调、光影和层级彼此呼应，"
+        "不要出现机械贴片、孤立漂浮素材、硬边抠图、临时拼贴或风格割裂。"
         f"统一参考风格：{base_style_prompt}"
         f"当前节点提示词：{node_style_prompt}"
         f"具体场景：{scene_prompt}"
@@ -1113,7 +1136,8 @@ def compose_final_image_prompt(
         f"产品参考：{product.get('name', '')}，品类：{product.get('category', '')}，参考卖点仅作生活化表达：{product_points}。"
         "图片模型只会收到一张产品参考图；产品必须保留真实外观、结构、颜色、比例和材质，"
         "像真实物体一样摆放在餐边柜、厨房台面、客厅边柜或茶水间等合理位置，具有接触面、阴影、遮挡关系和环境光。"
-        "顶部为后期 Logo 保留干净空间，底部为后期宣传条保留空间；画面中不要生成额外 Logo、二维码、水印、价格牌或按钮。"
+        "顶部为 Logo 保留自然融入的品牌区，底部为宣传条和二维码保留干净高对比区域；"
+        "若没有收到对应品牌参考图，只预留区域，不要自行生成 Logo、二维码或宣传条。"
         "除产品型号外不要出现英文字母；所有可见文字都应为清晰中文，不要乱码和错别字。"
         f"{'用户补充需求：' + extra + '。' if extra else ''}"
     )
@@ -1147,7 +1171,8 @@ def build_negative_prompt() -> str:
         "不要让产品变形，不要替换为相似产品，不要生成多个产品，"
         "不要裁切掉产品关键结构，不要遮挡产品主体，不要人物手持，"
         "不要英文文案，不要乱码错字，不要错误汉字，不要硬广口号，不要价格标签，"
-        "不要 Logo，不要二维码，不要水印，不要边框，不要按钮，不要贴纸，"
+        "不要额外 Logo，不要额外二维码，不要伪造品牌标识，不要水印，不要边框，不要按钮，不要贴纸，"
+        "不要机械贴片，不要硬边抠图，不要孤立漂浮素材，不要光影割裂，"
         "不要绝对化承诺，不要医疗功效暗示，不要杂乱背景，"
         "不要夸张光效，不要脏污噪点，不要不可控品牌元素。"
     )
@@ -1604,17 +1629,23 @@ def append_image_constraints(
     brand_asset_roles: list[str] | None = None,
 ) -> str:
     zones = normalize_safe_zones(safe_zones)
-    brand_instruction = build_brand_fusion_instruction(brand_asset_roles or [])
+    roles = brand_asset_roles or []
+    brand_instruction = build_brand_fusion_instruction(roles)
+    qrcode_policy = build_qrcode_policy(roles)
     if brand_instruction:
         prompt = f"{prompt}\n\n{brand_instruction}"
     return (
         f"{prompt}\n\n"
         f"画布比例：竖版 {canvas_size[0]}x{canvas_size[1]}。"
         "请把参考产品自然融入真实营销场景，像原本就在场景里一样，有合理接触面、遮挡关系、阴影、环境光和景深。"
+        "整图必须是一张完整设计稿：节日元素、产品、Logo 区、底部宣传条区、二维码区、标题字和整体色调形成统一视觉系统，"
+        "边缘、材质、投影、透视和色彩都要一致，不要像后期把素材硬贴上去。"
         "例如春节可生成一家人围坐团圆饭的温暖场景，产品自然放在餐边柜、厨房台面或餐厅角落，不要突兀。"
         "保留参考产品的真实外观、品牌结构、材质和比例，不要把产品变成其他物体。"
         f"顶部和底部预留海报排版安全区：{json.dumps(zones, ensure_ascii=False)}。"
-        "画面允许生成清晰中文艺术字主标题和中文副文案，但不要生成英文、乱码、错别字、额外 Logo、二维码、水印、价格标签或促销标签。"
+        f"二维码策略：{qrcode_policy}。"
+        "画面允许生成清晰中文艺术字主标题和中文副文案；Logo 和底部宣传条只使用参考素材或预留区域，"
+        "不要生成英文、乱码、错别字、额外 Logo、额外二维码、水印、价格标签或促销标签。"
         f"负向约束：{negative_prompt}"
     )
 
@@ -1622,16 +1653,34 @@ def append_image_constraints(
 def build_brand_fusion_instruction(brand_asset_roles: list[str]) -> str:
     if not brand_asset_roles:
         return (
-            "No brand reference image is supplied except the product. Keep clean poster zones for later exact brand placement. "
-            "Do not invent logos, QR codes, bottom strips, watermarks, or price tags."
+            "No brand reference image is supplied except the product. Keep the poster visually complete without inventing logos, QR codes, bottom strips, watermarks, or price tags."
         )
     roles = ", ".join(brand_asset_roles)
     return (
         f"Additional reference images are supplied for these brand roles: {roles}. "
-        "Use only the supplied brand references, integrate them into the poster lighting, color, and layout, "
-        "and keep their intended zones consistent with the safe-zone JSON. "
-        "Logo and bottom strip may be visually blended with the scene; QR code must stay as a crisp high-contrast scan area. "
+        "Use only the supplied brand references and make them feel designed into the same poster, with matching lighting, color, scale, margins, and layout rhythm. "
+        "Logo and bottom strip may be visually blended with the scene background, but their identity and readable structure must be preserved. "
+        "If a QR code reference is supplied, include only one crisp high-contrast QR code area using that reference as the visual source; if the model cannot preserve it cleanly, leave a single clean QR placeholder area instead of inventing extra codes. "
         "Do not invent extra logos, extra QR codes, fake brand marks, watermarks, buttons, or price tags."
+    )
+
+
+def build_asset_roles(brand_asset_roles: list[str]) -> list[str]:
+    roles = ["product"]
+    for role in brand_asset_roles:
+        clean = sanitize_reference_role(role)
+        if clean and clean not in roles:
+            roles.append(clean)
+    return roles
+
+
+def build_qrcode_policy(brand_asset_roles: list[str]) -> str:
+    if "qrcode" in {sanitize_reference_role(role) for role in brand_asset_roles}:
+        return (
+            "use the supplied qrcode as the only qrcode-like visual in the poster; keep it crisp, high-contrast, and avoid adding any extra qrcode"
+        )
+    return (
+        "do not generate or hallucinate any qrcode pattern; if a contact area is needed, leave one clean high-contrast placeholder block"
     )
 
 
