@@ -1,74 +1,100 @@
-# 朴道节日/节气海报宣传 AI 员工 MVP
+# 朴道节日/节气海报宣传 AI 员工
 
-本项目用于生成节日/节气营销海报，当前 MVP 已跑通：
+这是一个用于生成节日、节气、活动营销海报的本地/云端 Web 应用。项目当前包含两条入口：
+
+- 一句话一键生图：输入自然语言指令，系统自动解析节日活动、产品、风格、画面元素、文案方向，并创建生成任务。
+- 手动配置生成：保留原有节点选择、素材选择、生成配置、预览下载流程，适合精细控制素材和文案。
+
+后端使用 FastAPI，直接托管静态前端页面；本地数据、上传文件和生成结果默认写入项目内 `storage/`。素材库默认只读索引，不移动、不覆盖原始素材。
+
+## 当前能力
+
+- 节日/节气/自定义活动海报生成
+- 一句话意图解析与自动素材匹配
+- 产品图、Logo、二维码、底部宣传条素材选择
+- AI 文案、场景提示词和图片融合调用
+- 任务创建、后台生成、前端轮询、JPG 预览下载
+- 文案合规检查和预览页二次渲染
+- demo fallback，用于无真实 AI Key 的本地演示
+- 一键 smoke test，覆盖手动链路和一键链路
+
+## 技术栈
 
 ```text
-选择营销节点 -> 选择系统产品图/上传产品图/上传整张场景图 -> 创建任务 -> 查询任务 -> 返回 JPG -> 前端预览/下载
+Backend   FastAPI / Python
+Frontend  Static HTML / CSS / JavaScript
+Database  SQLite
+Storage   local storage/
+Deploy    Windows local / Aliyun ECS / Vercel auxiliary config
 ```
 
-后端使用 FastAPI，并直接托管前端页面；数据库使用项目内 SQLite：
+## 目录结构
 
 ```text
-storage/festival_poster.sqlite3
+app/                         后端接口、任务、素材、AI 调用与合成逻辑
+config/                      节点、产品、规则等 seed 数据
+frontend/                    前端静态页面和交互脚本
+scripts/                     本地检查、冒烟测试脚本
+docs/                        测试计划与部署文档
+deploy/                      阿里云部署参考配置
+storage/                     本地数据库、上传文件、生成结果，默认不提交
+素材/                        产品、Logo、二维码、参考海报等原始素材，只读使用
 ```
 
-产品资料素材只做只读索引，不移动、不覆盖原素材文件。
+## 快速启动
 
-## 一键启动（推荐）
-
-双击项目根目录里的：
+Windows 本地推荐直接双击：
 
 ```text
 start.bat
 ```
 
-它会自动创建或复用 `.venv`、安装依赖、选择可用本地端口，并打开：
+脚本会自动：
+
+- 创建或复用 `.venv`
+- 安装 `requirements.txt`
+- 选择可用本地端口
+- 启动 FastAPI
+- 打开浏览器访问应用
+
+默认访问地址：
 
 ```text
 http://127.0.0.1:8000/
 ```
 
-后端会直接托管前端页面，不需要单独启动前端服务。默认模式会读取 `.env` 中的真实配置。
+如果 `8000` 被占用，脚本会尝试 `18085`、`18086`、`18087`。
 
-如果需要答辩备用演示模式，双击：
+## Demo 模式
+
+如果没有真实 AI Key，或者只是演示完整流程，可以双击：
 
 ```text
 start_demo.bat
 ```
 
-它会调用同一个启动入口，并启用演示 fallback，不会冒充真实 AI 生图。
+它会调用同一个启动入口，并设置：
 
-## 你在 Windows 上能不能运行
+```text
+APP_ENV=demo
+AI_REQUIRE_IMAGE_FUSION=false
+API_ACCESS_TOKEN=
+```
 
-可以。你的电脑没有 Linux 也没关系，本地开发和演示直接在 Windows PowerShell 里启动即可。
+demo 模式允许使用本地 fallback 生成演示结果，不会假装已经完成真实 AI 图片融合。
 
-阿里云 ECS 部署时服务器一般用 Ubuntu Linux，但那是服务器上的环境，和你本地电脑是不是 Linux 没冲突。
+## 手动启动
 
-如果你用的是 CMD，进入 D 盘项目目录要带 `/d`：
+首次准备：
 
 ```cmd
 cd /d D:\Codex_Projects\festival_poster
-```
-
-PowerShell 是 Windows 自带组件，一般不需要另外下载。开始菜单搜索 `PowerShell` 或 `终端` 就能打开；如果你暂时只会 CMD，也完全可以按下面 CMD 命令启动项目。
-
-## 首次准备
-
-打开 CMD，进入项目目录：
-
-```cmd
-cd /d D:\Codex_Projects\festival_poster
-```
-
-创建虚拟环境并安装依赖：
-
-```cmd
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-如果你的电脑上 `python` 命令不可用，试试：
+如果 `python` 命令不可用，可以改用：
 
 ```cmd
 py -3 -m venv .venv
@@ -76,157 +102,56 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-不需要手动创建数据库。后端启动时会自动初始化 `storage/`、SQLite 表和素材索引。
-
-## 手动启动单入口应用
-
-如果不使用 `start_demo.bat`，打开一个 CMD 窗口：
+启动服务：
 
 ```cmd
-cd /d D:\Codex_Projects\festival_poster
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-看到类似下面内容就表示后端启动成功：
-
-```text
-Uvicorn running on http://127.0.0.1:8000
-```
-
-检查后端健康状态：
+健康检查：
 
 ```cmd
 curl http://127.0.0.1:8000/health
 ```
 
-浏览器打开：
+## 使用流程
 
-```text
-http://127.0.0.1:8000/
-```
+一键生图：
 
-接口前缀仍然是：
+1. 打开首页，默认进入“一键生成”。
+2. 输入一句话需求，例如节日、产品、风格、画面元素、文案方向。
+3. 点击“先解析”查看系统理解结果，或直接点击“一键生成”。
+4. 系统创建任务并轮询进度。
+5. 任务完成后预览 JPG，确认无误后下载。
 
-```text
-http://127.0.0.1:8000/api/v1
-```
+手动配置：
 
-普通用户不需要填写 API 地址。
+1. 切换到“手动配置”。
+2. 选择营销节点或自定义活动节点。
+3. 选择系统产品图，或上传产品图/整张场景图。
+4. 选择 Logo、二维码、底部宣传条等品牌素材。
+5. 填写风格、文案方向、补充需求。
+6. 创建任务并等待生成。
+7. 在预览页微调主标题/副标题，通过合规检查后下载 JPG。
 
-## 正常使用流程
+## AI 配置
 
-1. 打开前端页面。
-2. 选择一个营销节点，例如春节。
-3. 进入素材页。
-4. 选择产品来源：
-   - 系统产品图：使用 `素材/产品资料` 中已索引的产品图。
-   - 上传产品图：上传一张产品图。
-   - 上传整张场景图：直接上传一张完整场景图。
-5. 确认 Logo、二维码、底部条已选择。
-6. 进入生成配置页，填写补充需求。
-7. 选择文案模式：
-   - AI 生成文案：标题输入框作为偏好，可留空，后端会调用文本模型生成主标题/副标题。
-   - 手动填写文案：主标题和副标题必填，后端不会调用文本模型改写你的文案。
-8. 点击生成海报。
-9. 页面会立刻拿到任务 ID 并开始轮询，AI 文案、提示词和图片融合都在后台执行。
-10. 进入预览页后，可微调主标题/副标题。
-11. 文案通过合规检查后，系统会重新合成 JPG。
-12. 点击下载 JPG。
-
-## 端口被占用怎么办
-
-如果后端 `8000` 被占用，可以换端口，例如：
-
-```cmd
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 18083 --reload
-```
-
-然后打开：
-
-```text
-http://127.0.0.1:18083/
-```
-
-FastAPI 会直接托管前端，同源 API 自动走 `/api/v1`，普通用户不需要手动改 API 地址。
-
-## 常用检查命令
-
-Python 编译检查：
-
-```cmd
-.\.venv\Scripts\python.exe -m compileall -q app config scripts
-```
-
-前端 JS 语法检查：
-
-```cmd
-node --check frontend\app.js
-```
-
-查看产品列表接口：
-
-```cmd
-curl http://127.0.0.1:8000/api/v1/products
-```
-
-查看系统产品素材接口：
-
-```cmd
-curl "http://127.0.0.1:8000/api/v1/assets?asset_type=product_image&source=product_material"
-```
-
-## 关于生图测试
-
-下面命令会触发完整生成链路，会生成 JPG：
-
-```cmd
-.\.venv\Scripts\python.exe scripts\smoke_test.py
-```
-
-如果默认 smoke test 端口被占用，可以临时换端口：
-
-```cmd
-set SMOKE_TEST_PORT=18084
-.\.venv\Scripts\python.exe scripts\smoke_test.py
-```
-
-如果只是检查服务是否启动，不要跑这个脚本，只跑 `/health` 即可。
-
-答辩前完整可复现检查：
-
-```cmd
-.\.venv\Scripts\python.exe scripts\demo_check.py
-```
-
-它会临时启动单入口应用，验证 health、节点、产品、Logo、底部条、上传、任务生成、JPG 访问、二维码为空时不叠加、SQLite 不公开。
-
-## AI 中转站配置
-
-前端不直接调用 AI 中转站，AI 调用统一封装在后端：
+前端不直接访问 AI 中转站，所有 AI 调用都封装在后端：
 
 ```text
 app/services/ai_provider.py
 ```
 
-`.env` 只放本地或服务器本机，不要提交，不要把真实 Key 写进代码、README 或日志。
-
-当前生成链路是：
-
-```text
-文本模型生成海报文案和生图提示词
--> 图片模型读取产品参考图，生成融合场景图
--> 本地叠加 Logo、主标题、副标题、二维码、底部条
--> 输出 JPG
-```
-
-产品图模式默认必须调用图片模型生成融合场景图。如果图片 Key 未配置、图片接口失败、超时，或中转站协议不兼容，任务会直接失败并在前端显示 `AI_IMAGE_FUSION_FAILED`，不会再静默降级成本地背景加产品图堆叠。这样可以明确区分“真实 AI 生图”和“本地合成”。
-
-如需在无 Key 环境临时演示，可在本地 `.env` 中设置 `AI_REQUIRE_IMAGE_FUSION=false`，此时才允许降级为本地兜底合成；正式联调和部署建议保持 `true`。
-
-可参考 `.env.example` 配置：
+真实配置写入本地 `.env`，不要提交真实 Key。可以参考 `.env.example`：
 
 ```dotenv
-AI_BASE_URL=https://你的中转站地址
+AI_BASE_URL=https://your-ai-gateway.example.com
+APP_ENV=production
+
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+CORS_ALLOW_LOCALHOST=true
+CORS_ALLOW_ORIGIN_REGEX=
+API_ACCESS_TOKEN=your_optional_mvp_api_token_here
 
 GPT_TEXT_API_KEY=your_text_generation_key_here
 GPT_TEXT_MODEL=your_text_model_name
@@ -248,66 +173,118 @@ AI_IMAGE_TIMEOUT_SECONDS=120
 AI_REQUIRE_IMAGE_FUSION=true
 ```
 
-`AI_IMAGE_FUSION_REQUEST_MODE` 默认是 `multipart`，用于 OpenAI 风格的图片编辑接口。不同中转站可能要求不同图片字段：
-
-- 常见多图字段：`AI_IMAGE_FILE_FIELD=image[]`
-- 有些中转站只认单数字段：`AI_IMAGE_FILE_FIELD=image`
-- 有些中转站要求带序号：`AI_IMAGE_FILE_FIELD=image[{index}]`
-- 如果你的中转站只支持 JSON base64，可改成：`AI_IMAGE_FUSION_REQUEST_MODE=json_base64`
-
-`AI_IMAGE_RESPONSE_FORMAT=b64_json` 会请求接口直接返回 base64 图片；如果你的中转站只返回 URL，也可以按中转站文档调整或留空。
-
-图片生成通常至少需要 30 秒，默认 `AI_IMAGE_TIMEOUT_SECONDS=120`。如果你的真实 `.env` 里还写着 `AI_IMAGE_TIMEOUT_SECONDS=90`，请手动改为 `120`；本项目规则要求 `.env` 只读，自动化 agent 不会替你修改真实 Key 配置文件。
-
-## 已实现接口
-
-- `GET /health`
-- `GET /api/v1/marketing-nodes`
-- `GET /api/v1/products`
-- `GET /api/v1/assets`
-- `GET /api/v1/assets/{asset_id}/file`
-- `POST /api/v1/assets`
-- `POST /api/v1/poster-tasks`
-- `GET /api/v1/poster-tasks/{task_id}`
-- `GET /api/v1/poster-tasks/{task_id}/composition`
-- `POST /api/v1/poster-tasks/{task_id}/rerender`
-- `POST /api/v1/compliance/check`
-
-`/storage/` 只公开 `generated/`、`uploads/`、`system/` 下的 JPG/PNG/WEBP 图片。SQLite、日志、pid 和 composition JSON 不走静态文件直链；合成参数请通过 `GET /api/v1/poster-tasks/{task_id}/composition` 读取。
-
-## 目录说明
+正式联调建议保持：
 
 ```text
-app/                         后端代码
-frontend/                    前端静态页面
-config/                      节点、产品和规则 seed 数据
-scripts/                     检查脚本
-storage/                     本地数据库、上传文件、生成结果
-docs/aliyun_deploy.md        阿里云 ECS 部署说明
-素材/产品资料                 现有产品素材库，只读索引
+AI_REQUIRE_IMAGE_FUSION=true
 ```
 
-## 阿里云部署
+这样图片融合失败时任务会明确报错，不会静默降级成本地合成，便于区分真实 AI 生图和演示 fallback。
 
-部署到阿里云 ECS 时，推荐使用：
+## 接口概览
 
-- Ubuntu 22.04 或 24.04
-- Python venv
-- systemd 托管后端
-- FastAPI 单入口托管前端和 `/api/v1`
-- Nginx 对整站启用共享密码并反向代理到 FastAPI
-- `storage/` 作为持久化目录
+```text
+GET  /health
+GET  /api/v1/app-config
+GET  /api/v1/marketing-nodes
+GET  /api/v1/products
+GET  /api/v1/assets
+GET  /api/v1/assets/{asset_id}/file
+POST /api/v1/assets
+POST /api/v1/one-click-intent
+POST /api/v1/one-click-poster-tasks
+POST /api/v1/poster-tasks
+GET  /api/v1/poster-tasks/{task_id}
+GET  /api/v1/poster-tasks/{task_id}/composition
+POST /api/v1/poster-tasks/{task_id}/rerender
+POST /api/v1/compliance/check
+```
 
-详细步骤见：
+`/storage/` 只公开 `generated/`、`uploads/`、`system/` 下的 JPG、PNG、WEBP 图片。SQLite、日志、pid、composition JSON 不通过静态文件直链公开。
+
+## 本地检查
+
+Python 编译检查：
+
+```cmd
+.\.venv\Scripts\python.exe -m compileall -q app config scripts
+```
+
+前端语法检查：
+
+```cmd
+node --check frontend\app.js
+node --check frontend\one-click.js
+```
+
+一键入口守卫测试：
+
+```cmd
+.\.venv\Scripts\python.exe scripts\one_click_guardrails_test.py
+```
+
+一键链路 smoke test：
+
+```cmd
+.\.venv\Scripts\python.exe scripts\one_click_smoke_test.py
+```
+
+完整演示检查：
+
+```cmd
+.\.venv\Scripts\python.exe scripts\demo_check.py
+```
+
+如果端口被占用，可临时指定端口：
+
+```cmd
+set ONE_CLICK_SMOKE_PORT=18087
+.\.venv\Scripts\python.exe scripts\one_click_smoke_test.py
+```
+
+如果服务已经启动，可直接检查现有服务：
+
+```cmd
+set ONE_CLICK_SMOKE_BASE_URL=http://127.0.0.1:8000
+.\.venv\Scripts\python.exe scripts\one_click_smoke_test.py
+```
+
+## 部署说明
+
+阿里云 ECS 部署参考：
 
 ```text
 docs/aliyun_deploy.md
 ```
 
-生产环境注意：
+推荐部署方式：
 
-- `.env` 只放服务器本地。
-- 不要清空 `storage/`。
-- 生产 CORS 收紧到正式域名或服务器 IP。
-- 云端演示默认使用 Nginx Basic Auth 共享密码，不把密码写进代码或 `.env.example`。
-- 配 HTTPS 后再正式对外使用。
+- Ubuntu 22.04 或 24.04
+- Python venv
+- systemd 托管 FastAPI
+- Nginx 反向代理到后端
+- `storage/` 作为持久化目录
+- `.env` 只放服务器本地
+- 配置 HTTPS 后再正式对外使用
+
+## 安全注意
+
+- 不要提交 `.env`。
+- 不要把真实 API Key 写入代码、README、日志或提交记录。
+- 不要删除、移动、覆盖 `素材/`、PRD、备份 zip 和备份目录。
+- 素材目录只读使用，生成结果写入 `storage/`。
+- 生产环境建议启用 `API_ACCESS_TOKEN`，并收紧 CORS。
+
+## 当前分支
+
+当前开发分支：
+
+```text
+codex/ai-brand-fusion
+```
+
+GitHub 地址：
+
+```text
+https://github.com/Leez-Xa/festival_poster
+```
