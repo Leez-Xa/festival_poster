@@ -3,7 +3,7 @@
   const POLL_INTERVAL_MS = 2500;
   const POLL_INTERVAL_SLOW_MS = 5000;
   const WARNING_MS = 10000;
-  const MAX_POLL_MS = 240000;
+  const MAX_POLL_MS = 600000;
 
   const fallbackApiBase = (() => {
     const isHttpPage = location.protocol === "http:" || location.protocol === "https:";

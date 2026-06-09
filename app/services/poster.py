@@ -26,6 +26,23 @@ from config.seed_data import MARKETING_NODES, PRODUCTS
 
 
 CANVAS_SIZE = (1080, 1920)
+DEFAULT_BOTTOM_BAR_QR_SLOTS = [
+    {
+        "id": "bottom_bar_public_account",
+        "label": "公众号",
+        "box_ratio": (0.690, 0.192, 0.794, 0.629),
+    },
+    {
+        "id": "bottom_bar_video",
+        "label": "视频号",
+        "box_ratio": (0.818, 0.176, 0.926, 0.635),
+    },
+]
+QRCODE_BOTTOM_MAX_SIDE_RATIO = 0.60
+QRCODE_BOTTOM_LABEL_RESERVE_RATIO = 0.30
+QRCODE_BOTTOM_LABEL_RESERVE_MIN = 44
+QRCODE_BOTTOM_TOP_PADDING_RATIO = 0.04
+QRCODE_BOTTOM_TOP_PADDING_MIN = 6
 _TASK_LOCKS: dict[str, threading.Lock] = {}
 _TASK_LOCKS_GUARD = threading.Lock()
 
@@ -45,11 +62,12 @@ def create_task(payload: PosterTaskCreate, background_tasks: BackgroundTasks) ->
     asset_mode, product_assets, scene_asset = resolve_task_assets(payload)
 
     logo_asset_id = payload.logo_asset_id or "asset_logo_original"
-    qrcode_asset_id = payload.qrcode_asset_id
+    qrcode_asset_ids = normalize_qrcode_asset_ids(payload)
+    qrcode_asset_id = qrcode_asset_ids[0] if qrcode_asset_ids else None
     bottom_bar_asset_id = payload.bottom_bar_asset_id or "asset_bottom_default"
     require_asset(logo_asset_id, "logo")
-    if qrcode_asset_id:
-        require_asset(qrcode_asset_id, "qrcode")
+    for asset_id in qrcode_asset_ids:
+        require_asset(asset_id, "qrcode")
     require_asset(bottom_bar_asset_id, "bottom_bar")
 
     validate_copy_preference(payload)
@@ -71,6 +89,7 @@ def create_task(payload: PosterTaskCreate, background_tasks: BackgroundTasks) ->
             "scene_reference_asset_id": scene_asset["id"] if scene_asset and asset_mode == "product_image" else None,
             "logo_asset_id": logo_asset_id,
             "qrcode_asset_id": qrcode_asset_id,
+            "qrcode_asset_ids": qrcode_asset_ids,
             "bottom_bar_asset_id": bottom_bar_asset_id,
         },
         "copy": None,
@@ -287,7 +306,11 @@ def compose_poster(
     scene_reference_asset = require_asset(scene_reference_asset_id, "scene_image") if scene_reference_asset_id else None
     scene_asset = require_asset(resolved["scene_asset_id"], "scene_image") if resolved.get("scene_asset_id") else None
     logo_asset = require_asset(resolved["logo_asset_id"], "logo")
-    qrcode_asset = require_asset(resolved["qrcode_asset_id"], "qrcode") if resolved.get("qrcode_asset_id") else None
+    qrcode_assets = [
+        require_asset(asset_id, "qrcode")
+        for asset_id in (resolved.get("qrcode_asset_ids") or ([resolved["qrcode_asset_id"]] if resolved.get("qrcode_asset_id") else []))
+    ]
+    qrcode_asset = qrcode_assets[0] if qrcode_assets else None
     bottom_bar_asset = require_asset(resolved["bottom_bar_asset_id"], "bottom_bar")
 
     output_dir = GENERATED_DIR / datetime.now().strftime("%Y%m%d") / task_id
@@ -319,7 +342,6 @@ def compose_poster(
             product_asset=product_asset,
             scene_reference_asset=scene_reference_asset,
             logo_asset=logo_asset,
-            qrcode_asset=qrcode_asset,
             bottom_bar_asset=bottom_bar_asset,
             output_dir=output_dir,
         )
@@ -331,69 +353,27 @@ def compose_poster(
         fusion_meta["rerender_product_overlay"] = local_product_overlay
 
     ai_handles_copy = bool(fusion_meta.get("ai_handles_copy"))
-    ai_final_only = should_use_ai_final_image(payload, fusion_meta, reuse_existing_scene)
-    if ai_final_only:
-        poster_copy = {
-            "title": fusion_meta.get("on_image_title") or copy["title"],
-            "subtitle": fusion_meta.get("on_image_subtitle") or copy["subtitle"],
-        }
-        rgb = base_canvas.convert("RGB")
-        rgb.save(poster_path, "JPEG", quality=94, optimize=True)
-        thumb = ImageOps.contain(rgb.copy(), (360, 640))
-        thumb.save(thumbnail_path, "JPEG", quality=88, optimize=True)
-        background_asset = fusion_meta.get("background_asset")
-        composition = {
-            "task_id": task_id,
-            "template_id": payload.template_id,
-            "node_id": payload.node_id,
-            "product_id": payload.product_id,
-            "asset_ids": {
-                "product_asset_ids": payload.product_asset_ids,
-                "product_asset_id": product_asset["id"] if product_asset else None,
-                "scene_asset_id": scene_asset["id"] if scene_asset else None,
-                "scene_reference_asset_id": scene_reference_asset["id"] if scene_reference_asset else None,
-                **resolved,
-                "background_asset_id": background_asset["id"] if background_asset else None,
-            },
-            "copy": {
-                **copy,
-                **poster_copy,
-                "source": "ai_final_image",
-            },
-            "compliance": compliance_override or task.get("compliance"),
-            "fusion": build_composition_fusion(
-                payload=payload,
-                product_asset=product_asset,
-                scene_asset=scene_asset or scene_reference_asset,
-                qrcode_asset=qrcode_asset,
-                fusion_meta={**fusion_meta, "final_layout_engine": "ai_final_image_no_local_overlay"},
-                layout=layout,
-            ),
-        }
-        composition_path.write_text(json.dumps(composition, ensure_ascii=False, indent=2), encoding="utf-8")
-        poster = {
-            "id": new_id("poster"),
-            "title": f"{node['name']}_poster_{datetime.now().strftime('%Y%m%d')}",
-            "jpg_url": public_storage_url(poster_path),
-            "thumbnail_url": public_storage_url(thumbnail_path),
-            "width": CANVAS_SIZE[0],
-            "height": CANVAS_SIZE[1],
-            "file_size_bytes": poster_path.stat().st_size,
-            "composition_json_url": f"/api/v1/poster-tasks/{task_id}/composition",
-            "copy": poster_copy,
-        }
-        return poster, composition["fusion"]
-
+    if qrcode_assets and ai_handles_copy:
+        fusion_meta["ai_receives_brand_assets"] = True
+        fusion_meta["brand_protection_mode"] = "ai_fusion_with_exact_final_qrcode_overlay"
+    ai_generated_full_design = payload.creation_mode == "one_click" and ai_handles_copy
     ai_handles_brand_assets = fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
     canvas = base_canvas.convert("RGBA") if ai_handles_copy else apply_layout_panels(base_canvas, layout)
     draw = ImageDraw.Draw(canvas)
 
     if local_product_overlay and product_asset:
         paste_product_local(canvas, Path(product_asset["_file_path"]), layout)
-    paste_logo(canvas, Path(logo_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
+    if not ai_generated_full_design:
+        paste_logo(canvas, Path(logo_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
     if not ai_handles_copy:
         draw_text_block(draw, copy["title"], copy["subtitle"], layout)
-    paste_bottom_bar(canvas, Path(bottom_bar_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
+    if not ai_generated_full_design:
+        paste_bottom_bar(
+            canvas,
+            Path(bottom_bar_asset["_file_path"]),
+            layout,
+            harmonized=ai_handles_brand_assets,
+        )
     if not ai_handles_copy:
         draw_footer_text(
             draw,
@@ -401,8 +381,26 @@ def compose_poster(
             contact_text=payload.contact_text,
             custom_requirement=payload.custom_requirement,
         )
-    if qrcode_asset:
-        paste_qrcode(canvas, Path(qrcode_asset["_file_path"]), layout, harmonized=ai_handles_brand_assets)
+    if qrcode_assets and ai_generated_full_design:
+        qrcode_overlay_meta = apply_exact_qrcode_overlays(
+            canvas,
+            qrcode_assets=qrcode_assets,
+            bottom_bar_asset=bottom_bar_asset,
+            layout=layout,
+        )
+        fusion_meta["exact_qrcode_overlay"] = qrcode_overlay_meta
+        if qrcode_overlay_meta.get("warnings"):
+            fusion_meta.setdefault("warnings", []).extend(qrcode_overlay_meta["warnings"])
+    elif qrcode_assets:
+        paste_qrcode(canvas, Path(qrcode_assets[0]["_file_path"]), layout, harmonized=ai_handles_brand_assets)
+        fusion_meta["exact_qrcode_overlay"] = {
+            "enabled": True,
+            "mode": "legacy_template_qrcode_overlay",
+            "placements": [],
+            "warnings": [],
+        }
+    else:
+        fusion_meta["exact_qrcode_overlay"] = {"enabled": False, "placements": [], "warnings": []}
 
     poster_copy = {
         "title": (fusion_meta.get("on_image_title") or copy["title"]) if ai_handles_copy else copy["title"],
@@ -459,16 +457,17 @@ def compose_poster(
     return poster, composition["fusion"]
 
 
-def should_use_ai_final_image(payload: PosterTaskCreate, fusion_meta: dict[str, Any], reuse_existing_scene: bool) -> bool:
-    if reuse_existing_scene:
-        return False
-    if payload.creation_mode != "one_click":
-        return False
-    if fusion_meta.get("status") != "ai_generated":
-        return False
-    if not fusion_meta.get("generated_image_contains_product"):
-        return False
-    return bool(fusion_meta.get("ai_handles_copy") or fusion_meta.get("ai_receives_brand_assets"))
+def normalize_qrcode_asset_ids(payload: PosterTaskCreate) -> list[str]:
+    ids: list[str] = []
+    for asset_id in payload.qrcode_asset_ids:
+        clean = str(asset_id).strip()
+        if clean and clean not in ids:
+            ids.append(clean)
+    if payload.qrcode_asset_id:
+        clean = payload.qrcode_asset_id.strip()
+        if clean and clean not in ids:
+            ids.insert(0, clean)
+    return ids[:4]
 
 
 def build_scene_canvas(*, scene_asset: dict[str, Any]) -> tuple[Image.Image, dict[str, Any], bool]:
@@ -507,7 +506,6 @@ def build_ai_scene_canvas(
     product_asset: dict[str, Any],
     scene_reference_asset: dict[str, Any] | None,
     logo_asset: dict[str, Any],
-    qrcode_asset: dict[str, Any] | None,
     bottom_bar_asset: dict[str, Any],
     output_dir: Path,
 ) -> tuple[Image.Image, dict[str, Any], bool]:
@@ -529,8 +527,8 @@ def build_ai_scene_canvas(
     scene_reference_path = Path(scene_reference_asset["_file_path"]) if scene_reference_asset else None
     brand_reference_assets = build_brand_reference_assets(
         logo_asset=logo_asset,
-        qrcode_asset=qrcode_asset,
         bottom_bar_asset=bottom_bar_asset,
+        output_dir=output_dir,
     )
     try:
         product_reference_path = prepare_product_reference_png(product_path, output_dir / "product_reference.png")
@@ -618,16 +616,87 @@ def prepare_product_reference_png(source_path: Path, output_path: Path) -> Path:
 def build_brand_reference_assets(
     *,
     logo_asset: dict[str, Any],
-    qrcode_asset: dict[str, Any] | None,
     bottom_bar_asset: dict[str, Any],
+    output_dir: Path,
 ) -> list[BrandReferenceAsset]:
+    bottom_reference = prepare_bottom_bar_reference_without_qrcodes(
+        source_path=Path(bottom_bar_asset["_file_path"]),
+        output_path=output_dir / "bottom_bar_qrcode_placeholders.png",
+    )
     assets = [
         BrandReferenceAsset(role="logo", asset_id=logo_asset["id"], path=Path(logo_asset["_file_path"])),
-        BrandReferenceAsset(role="bottom_bar", asset_id=bottom_bar_asset["id"], path=Path(bottom_bar_asset["_file_path"])),
+        BrandReferenceAsset(role="bottom_bar", asset_id=bottom_bar_asset["id"], path=bottom_reference),
     ]
-    if qrcode_asset:
-        assets.append(BrandReferenceAsset(role="qrcode", asset_id=qrcode_asset["id"], path=Path(qrcode_asset["_file_path"])))
     return assets
+
+
+def prepare_bottom_bar_reference_without_qrcodes(*, source_path: Path, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with Image.open(source_path) as source:
+            image = source.convert("RGBA")
+            ratios = detect_qrcode_dark_ratios_in_bottom_asset(image.convert("RGB"), expected_count=len(DEFAULT_BOTTOM_BAR_QR_SLOTS))
+            if len(ratios) < len(DEFAULT_BOTTOM_BAR_QR_SLOTS):
+                ratios = [slot["box_ratio"] for slot in DEFAULT_BOTTOM_BAR_QR_SLOTS]
+            for ratio in ratios[: len(DEFAULT_BOTTOM_BAR_QR_SLOTS)]:
+                box = ratio_box_to_pixels(ratio, image.size)
+                box = expand_box(box, max(4, int(min(image.size) * 0.015)), image.size)
+                patch = build_bottom_bar_qrcode_removed_patch(image, box)
+                image.alpha_composite(patch, (box[0], box[1]))
+            image.save(output_path, "PNG")
+            return output_path
+    except Exception:
+        return source_path
+
+
+def build_bottom_bar_qrcode_removed_patch(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+) -> Image.Image:
+    x0, y0, x1, y1 = box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    fill = sample_light_background_color(image, expand_box(box, 12, image.size))
+    return Image.new("RGBA", (width, height), fill)
+
+
+def sample_light_background_color(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    pixels = image.load()
+    values: list[tuple[int, int, int]] = []
+    step = max(1, min(box_width(box), box_height(box)) // 18)
+    for y in range(box[1], box[3], step):
+        for x in range(box[0], box[2], step):
+            r, g, b, *_ = pixels[x, y]
+            if r >= 235 and g >= 235 and b >= 235:
+                values.append((r, g, b))
+    if not values:
+        return (255, 255, 255, 255)
+    values.sort()
+    mid = values[len(values) // 2]
+    return (mid[0], mid[1], mid[2], 255)
+
+
+def ratio_box_to_pixels(box_ratio: tuple[float, float, float, float], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = size
+    return (
+        int(round(box_ratio[0] * width)),
+        int(round(box_ratio[1] * height)),
+        int(round(box_ratio[2] * width)),
+        int(round(box_ratio[3] * height)),
+    )
+
+
+def clamp_box(box: tuple[int, int, int, int], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = size
+    return (
+        max(0, min(width, box[0])),
+        max(0, min(height, box[1])),
+        max(0, min(width, box[2])),
+        max(0, min(height, box[3])),
+    )
 
 
 def build_local_fallback_scene_canvas(
@@ -776,11 +845,7 @@ def build_composition_fusion(
             fusion_meta["mode"] in {"scene_with_product", "prebuilt_scene_image", "local_mock_composite", "image_edit_json_reference"},
         ),
         "final_layout_engine": fusion_meta.get("final_layout_engine")
-        or (
-            "ai_scene_with_exact_brand_protection"
-            if fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay"
-            else "pillow_template_overlay"
-        ),
+        or infer_final_layout_engine(fusion_meta),
         "safe_zones": {
             "ai_top_logo": list(ai_safe_zones["top_logo"]),
             "ai_bottom_copy_qrcode": list(ai_safe_zones["bottom_copy_qrcode"]),
@@ -796,9 +861,19 @@ def build_composition_fusion(
         "fallback": fusion_meta["fallback"],
         "warnings": fusion_meta.get("warnings", []),
         "base_scene_url": fusion_meta.get("base_scene_url"),
+        "exact_qrcode_overlay": fusion_meta.get("exact_qrcode_overlay") or {"enabled": False, "placements": [], "warnings": []},
         "rerender_product_overlay": bool(fusion_meta.get("rerender_product_overlay")),
         "rerender_reused_scene": bool(fusion_meta.get("rerender_reused_scene")),
     }
+
+
+def infer_final_layout_engine(fusion_meta: dict[str, Any]) -> str:
+    overlay = fusion_meta.get("exact_qrcode_overlay") or {}
+    if overlay.get("enabled"):
+        return "ai_scene_with_pillow_exact_qrcode_overlay"
+    if fusion_meta.get("brand_protection_mode") == "ai_fusion_with_exact_final_overlay":
+        return "ai_scene_with_exact_brand_protection"
+    return "pillow_template_overlay"
 
 
 def load_canvas_image(
@@ -940,6 +1015,940 @@ def paste_qrcode(canvas: Image.Image, qrcode_path: Path, layout: dict[str, Any],
             draw_centered_text(draw, "扫码", (card_box[0], int(settings["caption_y"]), card_box[2], card_box[3] - 8), caption_font, "#12312E")
     except Exception:
         pass
+
+
+def apply_exact_qrcode_overlays(
+    canvas: Image.Image,
+    *,
+    qrcode_assets: list[dict[str, Any]],
+    bottom_bar_asset: dict[str, Any],
+    layout: dict[str, Any],
+    force_template_bottom_bar: bool = False,
+) -> dict[str, Any]:
+    if not qrcode_assets:
+        return {"enabled": False, "placements": [], "warnings": []}
+
+    if force_template_bottom_bar:
+        placement_plan = qrcode_overlay_boxes_from_template_bottom_bar(
+            layout,
+            expected_count=len(qrcode_assets),
+            bottom_bar_asset=bottom_bar_asset,
+            canvas_size=canvas.size,
+        )
+    else:
+        placement_plan = locate_qrcode_overlay_boxes(
+            canvas,
+            layout,
+            expected_count=len(qrcode_assets),
+            bottom_bar_asset=bottom_bar_asset,
+        )
+    detected_boxes = placement_plan["boxes"]
+    placement_source = placement_plan["source"]
+    warnings: list[str] = list(placement_plan.get("warnings") or [])
+    if len(detected_boxes) < len(qrcode_assets):
+        warnings.append("可用二维码槽位少于已选二维码数量，剩余二维码未贴入。")
+
+    placements: list[dict[str, Any]] = []
+    for index, asset in enumerate(qrcode_assets[: len(detected_boxes)]):
+        box = detected_boxes[index]
+        try:
+            paste_qrcode_into_box(canvas, Path(asset["_file_path"]), box)
+            placements.append(
+                {
+                    "slot_id": DEFAULT_BOTTOM_BAR_QR_SLOTS[index]["id"] if index < len(DEFAULT_BOTTOM_BAR_QR_SLOTS) else f"slot_{index + 1}",
+                    "slot_label": DEFAULT_BOTTOM_BAR_QR_SLOTS[index]["label"] if index < len(DEFAULT_BOTTOM_BAR_QR_SLOTS) else "二维码",
+                    "asset_id": asset["id"],
+                    "asset_name": asset.get("name", ""),
+                    "box": list(box),
+                    "source": placement_source,
+                    "pasted": True,
+                }
+            )
+        except Exception as exc:
+            warnings.append(f"二维码 {asset.get('id', '')} 贴入失败：{exc}")
+
+    return {
+        "enabled": True,
+        "mode": "ai_bottom_bar_placeholder_exact_qrcode_overlay",
+        "bottom_bar_asset_id": bottom_bar_asset.get("id"),
+        "placeholder_detection": placement_source,
+        "detected_bottom_bar_box": placement_plan.get("bottom_band"),
+        "raw_detected_bottom_bar_box": placement_plan.get("raw_bottom_band"),
+        "source_qrcode_slot_ratios": placement_plan.get("slot_ratios"),
+        "placements": placements,
+        "warnings": warnings,
+    }
+
+
+def paste_qrcode_into_box(canvas: Image.Image, qrcode_path: Path, box: tuple[int, int, int, int]) -> None:
+    target_w = box_width(box)
+    target_h = box_height(box)
+    target_size = max(1, min(target_w, target_h))
+    with Image.open(qrcode_path) as qrcode_image:
+        qrcode = ImageOps.contain(
+            qrcode_image.convert("RGBA"),
+            (target_size, target_size),
+            Image.Resampling.LANCZOS,
+        )
+        x = box[0] + (target_w - target_size) // 2
+        y = box[1] + (target_h - target_size) // 2
+        canvas.alpha_composite(qrcode, (x + (target_size - qrcode.width) // 2, y + (target_size - qrcode.height) // 2))
+
+
+def erase_qrcode_placeholder_regions(
+    canvas: Image.Image,
+    boxes: list[tuple[int, int, int, int]],
+    bottom_band_value: Any,
+    *,
+    bottom_bar_asset: dict[str, Any] | None = None,
+) -> None:
+    if not boxes or not bottom_band_value:
+        return
+    try:
+        bottom_band = tuple(int(value) for value in bottom_band_value)
+    except Exception:
+        return
+    source = canvas.convert("RGBA")
+    erase_limit = qrcode_placeholder_erase_limit(bottom_band, canvas.size)
+    bottom_patch_source = load_bottom_bar_patch_source(bottom_bar_asset, bottom_band)
+    for box in boxes:
+        pad = max(2, min(box_width(box), box_height(box)) // 24)
+        erase_box = expand_box(box, pad, canvas.size)
+        erase_box = intersect_boxes(erase_box, erase_limit)
+        if box_width(erase_box) <= 0 or box_height(erase_box) <= 0:
+            continue
+        patch = build_qrcode_placeholder_erase_patch(source, erase_box)
+        if bottom_patch_source is not None:
+            patch = overlay_bottom_bar_patch(patch, bottom_patch_source, erase_box, bottom_band)
+        canvas.alpha_composite(patch, (erase_box[0], erase_box[1]))
+
+
+def intersect_boxes(
+    a: tuple[int, int, int, int],
+    b: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
+
+
+def qrcode_placeholder_erase_limit(
+    bottom_band: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    qr_band = qrcode_overlay_qr_safe_band(bottom_band)
+    return (0, 0, canvas_size[0], qr_band[3])
+
+
+def load_bottom_bar_patch_source(
+    bottom_bar_asset: dict[str, Any] | None,
+    bottom_band: tuple[int, int, int, int],
+) -> Image.Image | None:
+    path = Path(bottom_bar_asset.get("_file_path") or bottom_bar_asset.get("file_path") or "") if bottom_bar_asset else None
+    if not path or not path.exists():
+        return None
+    try:
+        with Image.open(path) as source:
+            size = (box_width(bottom_band), box_height(bottom_band))
+            return ImageOps.fit(source.convert("RGBA"), size, method=Image.Resampling.LANCZOS)
+    except Exception:
+        return None
+
+
+def overlay_bottom_bar_patch(
+    base_patch: Image.Image,
+    bottom_patch_source: Image.Image,
+    erase_box: tuple[int, int, int, int],
+    bottom_band: tuple[int, int, int, int],
+) -> Image.Image:
+    x0, y0, x1, y1 = erase_box
+    target = base_patch.copy()
+    overlap = intersect_boxes(erase_box, bottom_band)
+    if box_width(overlap) <= 0 or box_height(overlap) <= 0:
+        return target
+    source_box = (
+        overlap[0] - bottom_band[0],
+        overlap[1] - bottom_band[1],
+        overlap[2] - bottom_band[0],
+        overlap[3] - bottom_band[1],
+    )
+    patch = bottom_patch_source.crop(source_box)
+    target.alpha_composite(patch, (overlap[0] - x0, overlap[1] - y0))
+    return target
+
+
+def build_qrcode_placeholder_erase_patch(
+    source: Image.Image,
+    box: tuple[int, int, int, int],
+) -> Image.Image:
+    x0, y0, x1, y1 = box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    pixels = source.load()
+    patch = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    patch_pixels = patch.load()
+    for local_y, y in enumerate(range(y0, y1)):
+        left = find_non_qrcode_placeholder_pixel(pixels, source.size, x0 - 1, y, direction=-1)
+        right = find_non_qrcode_placeholder_pixel(pixels, source.size, x1, y, direction=1)
+        if not left and local_y > 0:
+            left = patch_pixels[0, local_y - 1]
+        if not right and local_y > 0:
+            right = patch_pixels[width - 1, local_y - 1]
+        left = left or right or (227, 241, 231, 255)
+        right = right or left
+        for local_x in range(width):
+            ratio = local_x / max(width - 1, 1)
+            patch_pixels[local_x, local_y] = tuple(
+                int(left[channel] * (1 - ratio) + right[channel] * ratio)
+                for channel in range(4)
+            )
+    return patch.filter(ImageFilter.GaussianBlur(radius=0.8))
+
+
+def build_horizontal_background_patch(
+    source: Image.Image,
+    box: tuple[int, int, int, int],
+) -> Image.Image:
+    x0, y0, x1, y1 = box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    pixels = source.load()
+    patch = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    patch_pixels = patch.load()
+    for local_y, y in enumerate(range(y0, y1)):
+        left = find_background_pixel(pixels, source.size, x0 - 1, y, direction=-1)
+        right = find_background_pixel(pixels, source.size, x1, y, direction=1)
+        if not left and local_y > 0:
+            left = patch_pixels[0, local_y - 1]
+        if not right and local_y > 0:
+            right = patch_pixels[width - 1, local_y - 1]
+        left = left or (226, 241, 229, 255)
+        right = right or left
+        for local_x in range(width):
+            ratio = local_x / max(width - 1, 1)
+            patch_pixels[local_x, local_y] = tuple(
+                int(left[channel] * (1 - ratio) + right[channel] * ratio)
+                for channel in range(4)
+            )
+    return patch.filter(ImageFilter.GaussianBlur(radius=1.4))
+
+
+def find_background_pixel(
+    pixels: Any,
+    size: tuple[int, int],
+    start_x: int,
+    y: int,
+    *,
+    direction: int,
+) -> tuple[int, int, int, int] | None:
+    width, height = size
+    if y < 0 or y >= height:
+        return None
+    x = max(0, min(start_x, width - 1))
+    for _ in range(180):
+        if x < 0 or x >= width:
+            break
+        pixel = pixels[x, y]
+        if not is_qrcode_card_pixel(pixel[:3]):
+            return pixel
+        x += direction
+    return None
+
+
+def find_non_qrcode_placeholder_pixel(
+    pixels: Any,
+    size: tuple[int, int],
+    start_x: int,
+    y: int,
+    *,
+    direction: int,
+) -> tuple[int, int, int, int] | None:
+    width, height = size
+    if y < 0 or y >= height:
+        return None
+    x = max(0, min(start_x, width - 1))
+    for _ in range(220):
+        if x < 0 or x >= width:
+            break
+        pixel = pixels[x, y]
+        rgb = pixel[:3]
+        if not is_qrcode_card_pixel(rgb) and not is_qr_dark_pixel(rgb):
+            return pixel
+        x += direction
+    return None
+
+
+def _legacy_locate_qrcode_overlay_boxes_unused(
+    canvas: Image.Image,
+    layout: dict[str, Any],
+    *,
+    expected_count: int,
+) -> dict[str, Any]:
+    bottom_band = detect_bottom_bar_band(canvas)
+    if not bottom_band:
+        return {
+            "source": "template_fallback",
+            "bottom_band": None,
+            "boxes": fallback_qrcode_boxes_from_layout(layout)[:expected_count],
+            "warnings": ["未能在 AI 生成图中稳定识别底部宣传条，已使用模板槽位兜底贴码。"],
+        }
+
+    ratio_boxes = qrcode_boxes_from_bottom_band(bottom_band)
+    card_boxes = detect_qrcode_card_boxes_in_bottom_band(canvas, bottom_band, expected_count=expected_count)
+    if card_boxes:
+        return {
+            "source": "detected_qrcode_card",
+            "bottom_band": list(bottom_band),
+            "boxes": normalize_qrcode_box_count(card_boxes, ratio_boxes, expected_count, canvas.size),
+            "warnings": [],
+        }
+
+    qr_like_boxes = detect_qr_like_boxes_in_bottom_band(canvas, bottom_band, expected_count=expected_count)
+    if qr_like_boxes:
+        return {
+            "source": "detected_qr_like_region",
+            "bottom_band": list(bottom_band),
+            "boxes": normalize_qrcode_box_count(qr_like_boxes, ratio_boxes, expected_count, canvas.size),
+            "warnings": ["AI 生成图中出现疑似二维码纹理，已用真实二维码覆盖该区域。"],
+        }
+
+    return {
+        "source": "detected_bottom_bar_ratio",
+        "bottom_band": list(bottom_band),
+        "boxes": ratio_boxes[:expected_count],
+        "warnings": [],
+    }
+
+
+def detect_qrcode_placeholder_boxes(canvas: Image.Image, layout: dict[str, Any]) -> list[tuple[int, int, int, int]]:
+    return locate_qrcode_overlay_boxes(canvas, layout, expected_count=len(DEFAULT_BOTTOM_BAR_QR_SLOTS))["boxes"]
+
+
+def locate_qrcode_overlay_boxes(
+    canvas: Image.Image,
+    layout: dict[str, Any],
+    *,
+    expected_count: int,
+    bottom_bar_asset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw_bottom_band = detect_bottom_bar_band(canvas)
+    allowed_bottom_band = qrcode_overlay_allowed_bottom_band(
+        raw_bottom_band,
+        layout,
+        canvas.size,
+        bottom_bar_asset=bottom_bar_asset,
+    )
+    placeholder_boxes = detect_bottom_qrcode_placeholder_boxes(canvas, expected_count=expected_count)
+    if len(placeholder_boxes) >= expected_count:
+        boxes = constrain_qrcode_boxes_to_bottom_band(
+            equalize_qrcode_boxes(placeholder_boxes[:expected_count], canvas.size),
+            allowed_bottom_band,
+            canvas.size,
+        )
+        return {
+            "source": "detected_bottom_placeholder_pair",
+            "bottom_band": list(allowed_bottom_band),
+            "raw_bottom_band": list(raw_bottom_band) if raw_bottom_band else None,
+            "boxes": boxes,
+            "erase_boxes": [list(box) for box in placeholder_boxes[:expected_count]],
+            "slot_ratios": [],
+            "warnings": [],
+        }
+
+    if not raw_bottom_band:
+        fallback_boxes = constrain_qrcode_boxes_to_bottom_band(
+            equalize_qrcode_boxes(
+                fallback_qrcode_boxes_from_layout(layout)[:expected_count],
+                canvas.size,
+            ),
+            allowed_bottom_band,
+            canvas.size,
+        )
+        return {
+            "source": "template_fallback",
+            "bottom_band": list(allowed_bottom_band),
+            "raw_bottom_band": None,
+            "boxes": fallback_boxes,
+            "erase_boxes": [],
+            "slot_ratios": [list(slot["box_ratio"]) for slot in DEFAULT_BOTTOM_BAR_QR_SLOTS[:expected_count]],
+            "warnings": ["Could not detect a stable bottom bar or QR placeholder pair; used template fallback QR slots."],
+        }
+
+    bottom_band = complete_bottom_bar_band(raw_bottom_band, canvas.size, bottom_bar_asset=bottom_bar_asset)
+    slot_ratios = qrcode_slot_ratios_from_bottom_bar_asset(bottom_bar_asset, expected_count=expected_count)
+    ratio_boxes = constrain_qrcode_boxes_to_bottom_band(
+        equalize_qrcode_boxes(
+            qrcode_boxes_from_bottom_band(bottom_band, slot_ratios=slot_ratios)[:expected_count],
+            canvas.size,
+        ),
+        allowed_bottom_band,
+        canvas.size,
+    )
+    card_boxes = detect_qrcode_card_boxes_in_bottom_band(canvas, bottom_band, expected_count=expected_count)
+    if len(card_boxes) >= expected_count:
+        return {
+            "source": "detected_qrcode_card_pair",
+            "bottom_band": list(allowed_bottom_band),
+            "raw_bottom_band": list(raw_bottom_band),
+            "boxes": constrain_qrcode_boxes_to_bottom_band(
+                equalize_qrcode_boxes(card_boxes[:expected_count], canvas.size),
+                allowed_bottom_band,
+                canvas.size,
+            ),
+            "erase_boxes": [list(box) for box in card_boxes[:expected_count]],
+            "slot_ratios": [list(ratio) for ratio in slot_ratios[:expected_count]],
+            "warnings": [],
+        }
+
+    qr_like_boxes = detect_qr_like_boxes_in_bottom_band(canvas, bottom_band, expected_count=expected_count)
+    if len(qr_like_boxes) >= expected_count:
+        return {
+            "source": "detected_qr_like_region_pair",
+            "bottom_band": list(allowed_bottom_band),
+            "raw_bottom_band": list(raw_bottom_band),
+            "boxes": constrain_qrcode_boxes_to_bottom_band(
+                equalize_qrcode_boxes(qr_like_boxes[:expected_count], canvas.size),
+                allowed_bottom_band,
+                canvas.size,
+            ),
+            "erase_boxes": [list(box) for box in qr_like_boxes[:expected_count]],
+            "slot_ratios": [list(ratio) for ratio in slot_ratios[:expected_count]],
+            "warnings": ["AI generated QR-like texture; replaced the paired regions with exact QR codes."],
+        }
+
+    warnings: list[str] = []
+    if placeholder_boxes or card_boxes or qr_like_boxes:
+        warnings.append("QR placeholder detection did not find a complete pair; used bottom-bar asset slot ratios for both QR codes.")
+    return {
+        "source": "bottom_bar_asset_slot_ratio",
+        "bottom_band": list(allowed_bottom_band),
+        "raw_bottom_band": list(raw_bottom_band),
+        "boxes": ratio_boxes[:expected_count],
+        "erase_boxes": [],
+        "slot_ratios": [list(ratio) for ratio in slot_ratios[:expected_count]],
+        "warnings": warnings,
+    }
+
+
+def qrcode_overlay_boxes_from_template_bottom_bar(
+    layout: dict[str, Any],
+    *,
+    expected_count: int,
+    bottom_bar_asset: dict[str, Any] | None,
+    canvas_size: tuple[int, int],
+) -> dict[str, Any]:
+    bottom_band = clamp_box(tuple(layout["bottom_bar"]["box"]), canvas_size)
+    slot_ratios = qrcode_slot_ratios_from_bottom_bar_asset(bottom_bar_asset, expected_count=expected_count)
+    boxes = constrain_qrcode_boxes_to_bottom_band(
+        equalize_qrcode_boxes(
+            qrcode_boxes_from_bottom_band(bottom_band, slot_ratios=slot_ratios)[:expected_count],
+            canvas_size,
+        ),
+        bottom_band,
+        canvas_size,
+    )
+    return {
+        "source": "template_bottom_bar_asset_slot_ratio",
+        "bottom_band": list(bottom_band),
+        "raw_bottom_band": None,
+        "boxes": boxes,
+        "erase_boxes": [],
+        "slot_ratios": [list(ratio) for ratio in slot_ratios[:expected_count]],
+        "warnings": [],
+    }
+
+
+def detect_bottom_bar_band(canvas: Image.Image) -> tuple[int, int, int, int] | None:
+    image = canvas.convert("RGB")
+    width, height = image.size
+    pixels = image.load()
+    row_scores: list[tuple[int, float]] = []
+    start_y = int(height * 0.58)
+    sample_step = 6
+    for y in range(start_y, height, sample_step):
+        light = 0
+        total = 0
+        for x in range(0, width, sample_step):
+            total += 1
+            if is_bottom_bar_pixel(pixels[x, y]):
+                light += 1
+        row_scores.append((y, light / max(total, 1)))
+
+    strong_threshold = 0.68
+    weak_threshold = 0.50
+    strong_rows = [
+        y
+        for y, score in row_scores
+        if y >= int(height * 0.78) and score >= strong_threshold
+    ]
+    if not strong_rows:
+        return None
+
+    if max(strong_rows) < height - max(48, int(height * 0.045)):
+        return None
+
+    score_by_y = {y: score for y, score in row_scores}
+    top = min(strong_rows)
+    bottom = min(height, max(strong_rows) + sample_step)
+    while top - sample_step >= start_y and score_by_y.get(top - sample_step, 0) >= weak_threshold:
+        top -= sample_step
+    while bottom < height and score_by_y.get(bottom, 0) >= weak_threshold:
+        bottom += sample_step
+    bottom = min(height, bottom)
+    for y, score in reversed(row_scores):
+        if y < top:
+            break
+        if y < bottom - max(80, int(height * 0.08)) and score < weak_threshold:
+            top = y + sample_step
+            break
+
+    band_height = bottom - top
+    if band_height < 110:
+        return None
+    if band_height > 430:
+        top = bottom - 430
+    return (0, top, width, bottom)
+
+
+def detect_qrcode_card_boxes_in_bottom_band(
+    canvas: Image.Image,
+    bottom_band: tuple[int, int, int, int],
+    *,
+    expected_count: int,
+) -> list[tuple[int, int, int, int]]:
+    if expected_count <= 0:
+        return []
+    image = canvas.convert("RGB")
+    pixels = image.load()
+    band_width = box_width(bottom_band)
+    band_height = box_height(bottom_band)
+    scan_box = (
+        bottom_band[0] + int(band_width * 0.56),
+        bottom_band[1] + int(band_height * 0.05),
+        bottom_band[2] - int(band_width * 0.02),
+        bottom_band[1] + int(band_height * 0.80),
+    )
+    step = 2
+    light_boxes: list[tuple[int, int, int, int]] = []
+    for y in range(scan_box[1], scan_box[3], step):
+        for x in range(scan_box[0], scan_box[2], step):
+            if is_qrcode_card_pixel(pixels[x, y]):
+                light_boxes.append((x, y, min(x + step, scan_box[2]), min(y + step, scan_box[3])))
+    if not light_boxes:
+        return []
+
+    merged = merge_nearby_boxes(light_boxes, padding=4)
+    candidates: list[tuple[int, int, int, int]] = []
+    for box in merged:
+        width = box_width(box)
+        height = box_height(box)
+        if width < 95 or height < 95:
+            continue
+        if width > band_width * 0.22 or height > band_height * 0.74:
+            continue
+        aspect = width / max(height, 1)
+        if aspect < 0.72 or aspect > 1.32:
+            continue
+        if light_pixel_ratio(image, box, step=5) < 0.18 or dark_pixel_ratio(image, box, step=5) < 0.04:
+            continue
+        candidates.append(qrcode_box_from_card_box(box, image.size, pad_ratio=0.07))
+
+    return sorted(candidates, key=lambda item: item[0])[:expected_count]
+
+
+def detect_qr_like_boxes_in_bottom_band(
+    canvas: Image.Image,
+    bottom_band: tuple[int, int, int, int],
+    *,
+    expected_count: int,
+) -> list[tuple[int, int, int, int]]:
+    if expected_count <= 0:
+        return []
+    image = canvas.convert("RGB")
+    pixels = image.load()
+    band_width = box_width(bottom_band)
+    band_height = box_height(bottom_band)
+    scan_left = bottom_band[0] + int(band_width * 0.56)
+    scan_top = bottom_band[1] + int(band_height * 0.08)
+    scan_bottom = bottom_band[1] + int(band_height * 0.82)
+    step = 4
+    dark_boxes: list[tuple[int, int, int, int]] = []
+    for y in range(scan_top, scan_bottom, step):
+        for x in range(scan_left, bottom_band[2], step):
+            if is_qr_dark_pixel(pixels[x, y]):
+                dark_boxes.append((x, y, min(x + step, bottom_band[2]), min(y + step, bottom_band[3])))
+
+    if not dark_boxes:
+        return []
+
+    merged = merge_nearby_boxes(dark_boxes, padding=18)
+    candidates: list[tuple[int, int, int, int]] = []
+    for box in merged:
+        width = box_width(box)
+        height = box_height(box)
+        if width < 72 or height < 72:
+            continue
+        if width > band_width * 0.28 or height > band_height * 0.90:
+            continue
+        aspect = width / max(height, 1)
+        if aspect < 0.55 or aspect > 1.65:
+            continue
+        dark_ratio = dark_pixel_ratio(image, box, step=5)
+        if dark_ratio < 0.08 or dark_ratio > 0.68:
+            continue
+        side = max(width, min(height, int(width * 1.18)))
+        side = min(side, int(band_height * 0.70))
+        square = clamp_box((box[0], box[1], box[0] + side, box[1] + side), image.size)
+        candidates.append(square)
+
+    return sorted(candidates, key=lambda item: item[0])[:expected_count]
+
+
+def normalize_qrcode_box_count(
+    detected_boxes: list[tuple[int, int, int, int]],
+    ratio_boxes: list[tuple[int, int, int, int]],
+    expected_count: int,
+    canvas_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    boxes = [clamp_box(box, canvas_size) for box in sorted(detected_boxes, key=lambda item: item[0])]
+    for ratio_box in ratio_boxes:
+        if len(boxes) >= expected_count:
+            break
+        if not any(boxes_overlap_or_near(existing, ratio_box, padding=32) for existing in boxes):
+            boxes.append(ratio_box)
+    return sorted(boxes, key=lambda item: item[0])[:expected_count]
+
+
+def is_placeholder_pixel(pixel: tuple[int, int, int]) -> bool:
+    r, g, b = pixel
+    return r >= 232 and g >= 232 and b >= 232 and max(r, g, b) - min(r, g, b) <= 18
+
+
+def is_qrcode_card_pixel(pixel: tuple[int, int, int]) -> bool:
+    r, g, b = pixel
+    return r >= 242 and g >= 242 and b >= 238 and max(r, g, b) - min(r, g, b) <= 24
+
+
+def is_qr_dark_pixel(pixel: tuple[int, int, int]) -> bool:
+    r, g, b = pixel
+    return r <= 118 and g <= 118 and b <= 118 and max(r, g, b) - min(r, g, b) <= 62
+
+
+def is_bottom_bar_pixel(pixel: tuple[int, int, int]) -> bool:
+    r, g, b = pixel
+    return r >= 210 and g >= 210 and b >= 205 and max(r, g, b) - min(r, g, b) <= 34
+
+
+def dark_pixel_ratio(image: Image.Image, box: tuple[int, int, int, int], *, step: int) -> float:
+    pixels = image.load()
+    dark = 0
+    total = 0
+    for y in range(box[1], box[3], step):
+        for x in range(box[0], box[2], step):
+            total += 1
+            if is_qr_dark_pixel(pixels[x, y]):
+                dark += 1
+    return dark / max(total, 1)
+
+
+def light_pixel_ratio(image: Image.Image, box: tuple[int, int, int, int], *, step: int) -> float:
+    pixels = image.load()
+    light = 0
+    total = 0
+    for y in range(box[1], box[3], step):
+        for x in range(box[0], box[2], step):
+            total += 1
+            if is_qrcode_card_pixel(pixels[x, y]):
+                light += 1
+    return light / max(total, 1)
+
+
+def expand_box(box: tuple[int, int, int, int], pad: int, size: tuple[int, int]) -> tuple[int, int, int, int]:
+    return clamp_box((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad), size)
+
+
+def detect_bottom_qrcode_placeholder_boxes(
+    canvas: Image.Image,
+    *,
+    expected_count: int,
+) -> list[tuple[int, int, int, int]]:
+    if expected_count <= 0:
+        return []
+    image = canvas.convert("RGB")
+    width, height = image.size
+    pixels = image.load()
+    scan_box = (
+        int(width * 0.55),
+        int(height * 0.82),
+        width,
+        height - max(8, int(height * 0.01)),
+    )
+    step = 2
+    light_boxes: list[tuple[int, int, int, int]] = []
+    for y in range(scan_box[1], scan_box[3], step):
+        for x in range(scan_box[0], scan_box[2], step):
+            if is_qrcode_card_pixel(pixels[x, y]):
+                light_boxes.append((x, y, min(x + step, scan_box[2]), min(y + step, scan_box[3])))
+    if not light_boxes:
+        return []
+
+    candidates: list[tuple[int, int, int, int]] = []
+    for box in merge_nearby_boxes(light_boxes, padding=4):
+        width_px = box_width(box)
+        height_px = box_height(box)
+        if width_px < 72 or height_px < 72:
+            continue
+        if width_px > width * 0.18 or height_px > height * 0.11:
+            continue
+        aspect = width_px / max(height_px, 1)
+        if aspect < 0.68 or aspect > 1.42:
+            continue
+        if box[0] < int(width * 0.55) or box[1] < int(height * 0.84):
+            continue
+        candidates.append(box)
+
+    return sorted(candidates, key=lambda item: item[0])[:expected_count]
+
+
+def equalize_qrcode_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    canvas_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    if not boxes:
+        return []
+    side = min(min(box_width(box), box_height(box)) for box in boxes)
+    side = max(1, side)
+    equalized: list[tuple[int, int, int, int]] = []
+    for box in sorted(boxes, key=lambda item: item[0]):
+        center_x = (box[0] + box[2]) // 2
+        center_y = (box[1] + box[3]) // 2
+        half = side // 2
+        candidate = (center_x - half, center_y - half, center_x - half + side, center_y - half + side)
+        equalized.append(clamp_square_box(candidate, canvas_size, side))
+    return equalized
+
+
+def clamp_square_box(
+    box: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+    side: int,
+) -> tuple[int, int, int, int]:
+    width, height = canvas_size
+    x = max(0, min(box[0], width - side))
+    y = max(0, min(box[1], height - side))
+    return (x, y, x + side, y + side)
+
+
+def qrcode_overlay_allowed_bottom_band(
+    raw_bottom_band: tuple[int, int, int, int] | None,
+    layout: dict[str, Any],
+    canvas_size: tuple[int, int],
+    *,
+    bottom_bar_asset: dict[str, Any] | None,
+) -> tuple[int, int, int, int]:
+    width, height = canvas_size
+    template_band = tuple(layout.get("bottom_bar", {}).get("box", (0, int(height * 0.86), width, height)))
+    template_band = clamp_box(template_band, canvas_size)
+    if not raw_bottom_band:
+        return template_band
+
+    completed = complete_bottom_bar_band(raw_bottom_band, canvas_size, bottom_bar_asset=bottom_bar_asset)
+    top = max(template_band[1], completed[1])
+    bottom = min(template_band[3], completed[3])
+    if bottom - top < 80:
+        return template_band
+    return (0, top, width, bottom)
+
+
+def constrain_qrcode_boxes_to_bottom_band(
+    boxes: list[tuple[int, int, int, int]],
+    bottom_band: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    if not boxes:
+        return []
+    qr_band = qrcode_overlay_qr_safe_band(bottom_band)
+    detected_side = min(min(box_width(box), box_height(box)) for box in boxes)
+    max_safe_side = int(box_height(bottom_band) * QRCODE_BOTTOM_MAX_SIDE_RATIO)
+    max_side = max(1, min(detected_side, box_height(qr_band), max_safe_side))
+    constrained: list[tuple[int, int, int, int]] = []
+    for box in sorted(boxes, key=lambda item: item[0]):
+        center_x = (box[0] + box[2]) // 2
+        center_y = (box[1] + box[3]) // 2
+        half = max_side // 2
+        x = center_x - half
+        y = center_y - half
+        x = max(qr_band[0], min(x, qr_band[2] - max_side))
+        y = max(qr_band[1], min(y, qr_band[3] - max_side))
+        constrained.append(clamp_square_box((x, y, x + max_side, y + max_side), canvas_size, max_side))
+    return constrained
+
+
+def qrcode_overlay_qr_safe_band(bottom_band: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    height = box_height(bottom_band)
+    top_padding = max(QRCODE_BOTTOM_TOP_PADDING_MIN, int(height * QRCODE_BOTTOM_TOP_PADDING_RATIO))
+    label_reserve = max(QRCODE_BOTTOM_LABEL_RESERVE_MIN, int(height * QRCODE_BOTTOM_LABEL_RESERVE_RATIO))
+    top = min(bottom_band[3] - 1, bottom_band[1] + top_padding)
+    bottom = max(top + 1, bottom_band[3] - label_reserve)
+    return (bottom_band[0], top, bottom_band[2], bottom)
+
+
+def bottom_band_from_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    canvas_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    if not boxes:
+        return (0, int(canvas_size[1] * 0.86), canvas_size[0], canvas_size[1])
+    top = max(0, min(box[1] for box in boxes) - int(canvas_size[1] * 0.035))
+    return (0, top, canvas_size[0], canvas_size[1])
+
+
+def complete_bottom_bar_band(
+    raw_bottom_band: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+    *,
+    bottom_bar_asset: dict[str, Any] | None,
+) -> tuple[int, int, int, int]:
+    width, height = canvas_size
+    bottom = raw_bottom_band[3]
+    source_ratio = bottom_bar_aspect_ratio(bottom_bar_asset) or 4.224
+    expected_height = int(round(width / source_ratio))
+    expected_height = max(box_height(raw_bottom_band), expected_height)
+    expected_height = min(expected_height, int(height * 0.20))
+    top = max(0, bottom - expected_height)
+    return (0, top, width, bottom)
+
+
+def bottom_bar_aspect_ratio(bottom_bar_asset: dict[str, Any] | None) -> float | None:
+    path = Path(bottom_bar_asset.get("_file_path") or bottom_bar_asset.get("file_path") or "") if bottom_bar_asset else None
+    if not path:
+        return None
+    try:
+        with Image.open(path) as image:
+            if image.height <= 0:
+                return None
+            return image.width / image.height
+    except Exception:
+        return None
+
+
+def qrcode_slot_ratios_from_bottom_bar_asset(
+    bottom_bar_asset: dict[str, Any] | None,
+    *,
+    expected_count: int,
+) -> list[tuple[float, float, float, float]]:
+    path = Path(bottom_bar_asset.get("_file_path") or bottom_bar_asset.get("file_path") or "") if bottom_bar_asset else None
+    if not path or not path.exists():
+        return [slot["box_ratio"] for slot in DEFAULT_BOTTOM_BAR_QR_SLOTS[:expected_count]]
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+        ratios = detect_qrcode_dark_ratios_in_bottom_asset(image, expected_count=expected_count)
+        if len(ratios) >= expected_count:
+            return ratios[:expected_count]
+    except Exception:
+        pass
+    return [slot["box_ratio"] for slot in DEFAULT_BOTTOM_BAR_QR_SLOTS[:expected_count]]
+
+
+def detect_qrcode_dark_ratios_in_bottom_asset(
+    image: Image.Image,
+    *,
+    expected_count: int,
+) -> list[tuple[float, float, float, float]]:
+    width, height = image.size
+    pixels = image.load()
+    step = 2
+    dark_boxes: list[tuple[int, int, int, int]] = []
+    for y in range(0, int(height * 0.75), step):
+        for x in range(int(width * 0.55), width, step):
+            if is_qr_dark_pixel(pixels[x, y]):
+                dark_boxes.append((x, y, min(x + step, width), min(y + step, height)))
+    candidates: list[tuple[int, int, int, int]] = []
+    for box in merge_nearby_boxes(dark_boxes, padding=14):
+        width_px = box_width(box)
+        height_px = box_height(box)
+        if width_px < 80 or height_px < 80:
+            continue
+        aspect = width_px / max(height_px, 1)
+        if aspect < 0.76 or aspect > 1.24:
+            continue
+        candidates.append(box)
+    ratios = []
+    for box in sorted(candidates, key=lambda item: item[0])[:expected_count]:
+        ratios.append((box[0] / width, box[1] / height, box[2] / width, box[3] / height))
+    return ratios
+
+
+def qrcode_box_from_card_box(
+    box: tuple[int, int, int, int],
+    size: tuple[int, int],
+    *,
+    pad_ratio: float,
+) -> tuple[int, int, int, int]:
+    width = box_width(box)
+    height = box_height(box)
+    pad = max(4, int(round(min(width, height) * pad_ratio)))
+    side = max(1, min(width - pad * 2, height - pad * 2))
+    center_x = (box[0] + box[2]) // 2
+    half = side // 2
+    x = center_x - half
+    y = box[1] + pad
+    if y + side > box[3] - pad:
+        y = (box[1] + box[3] - side) // 2
+    return clamp_box((x, y, x + side, y + side), size)
+
+
+def merge_nearby_boxes(boxes: list[tuple[int, int, int, int]], *, padding: int = 12) -> list[tuple[int, int, int, int]]:
+    merged: list[tuple[int, int, int, int]] = []
+    for box in sorted(boxes, key=lambda item: (item[0], item[1])):
+        found = False
+        for index, existing in enumerate(merged):
+            if boxes_overlap_or_near(existing, box, padding=padding):
+                merged[index] = (
+                    min(existing[0], box[0]),
+                    min(existing[1], box[1]),
+                    max(existing[2], box[2]),
+                    max(existing[3], box[3]),
+                )
+                found = True
+                break
+        if not found:
+            merged.append(box)
+    return merged
+
+
+def boxes_overlap_or_near(a: tuple[int, int, int, int], b: tuple[int, int, int, int], *, padding: int) -> bool:
+    return not (
+        a[2] + padding < b[0]
+        or b[2] + padding < a[0]
+        or a[3] + padding < b[1]
+        or b[3] + padding < a[1]
+    )
+
+
+def fallback_qrcode_boxes_from_layout(layout: dict[str, Any]) -> list[tuple[int, int, int, int]]:
+    bottom_box = tuple(layout["bottom_bar"]["box"])
+    return equalize_qrcode_boxes(qrcode_boxes_from_bottom_band(bottom_box), CANVAS_SIZE)
+
+
+def qrcode_boxes_from_bottom_band(
+    bottom_box: tuple[int, int, int, int],
+    *,
+    slot_ratios: list[tuple[float, float, float, float]] | None = None,
+) -> list[tuple[int, int, int, int]]:
+    bottom_size = (box_width(bottom_box), box_height(bottom_box))
+    boxes: list[tuple[int, int, int, int]] = []
+    ratios = slot_ratios or [slot["box_ratio"] for slot in DEFAULT_BOTTOM_BAR_QR_SLOTS]
+    for ratio in ratios:
+        local = ratio_box_to_pixels(ratio, bottom_size)
+        boxes.append(
+            (
+                bottom_box[0] + local[0],
+                bottom_box[1] + local[1],
+                bottom_box[0] + local[2],
+                bottom_box[1] + local[3],
+            )
+        )
+    return boxes
 
 
 def paste_bottom_bar(canvas: Image.Image, bottom_bar_path: Path, layout: dict[str, Any], *, harmonized: bool = False) -> None:

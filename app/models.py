@@ -27,6 +27,7 @@ class PosterTaskCreate(BaseModel):
     product_asset_ids: list[str] = Field(default_factory=list)
     logo_asset_id: str | None = None
     qrcode_asset_id: str | None = None
+    qrcode_asset_ids: list[str] = Field(default_factory=list)
     bottom_bar_asset_id: str | None = None
     contact_text: str = ""
     scene_prompt: str = ""
@@ -64,6 +65,7 @@ class OneClickPosterOverrides(BaseModel):
     product_asset_ids: list[str] | None = None
     logo_asset_id: str | None = None
     qrcode_asset_id: str | None = None
+    qrcode_asset_ids: list[str] | None = None
     bottom_bar_asset_id: str | None = None
     contact_text: str | None = None
     scene_prompt: str | None = None

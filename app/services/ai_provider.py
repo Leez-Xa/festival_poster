@@ -7,11 +7,12 @@ import random
 import re
 import ipaddress
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from uuid import uuid4
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -229,27 +230,49 @@ class AiProvider:
         )
 
     def _run_with_timeout(self, operation: str, fn: Any, timeout_seconds: int) -> Any:
+        started_at = time.perf_counter()
         executor = ThreadPoolExecutor(max_workers=1)
         try:
             future = executor.submit(fn)
             return future.result(timeout=timeout_seconds)
-        except TimeoutError as exc:
+        except FutureTimeoutError as exc:
+            elapsed_seconds = time.perf_counter() - started_at
             logger.warning(
-                "AI provider timeout: %s, context=%s",
+                "AI provider timeout: %s, elapsed_seconds=%.1f, timeout_seconds=%s, context=%s",
                 operation,
+                elapsed_seconds,
+                timeout_seconds,
                 self.settings.safe_log_context(),
             )
-            raise AiProviderError(f"AI调用超时：{operation}") from exc
-        except AiProviderError:
-            raise
-        except Exception as exc:
+            raise AiProviderError(
+                f"AI调用超时：{operation}（本地上限 {timeout_seconds} 秒，已等待 {elapsed_seconds:.1f} 秒）"
+            ) from exc
+        except AiProviderError as exc:
+            elapsed_seconds = time.perf_counter() - started_at
             logger.warning(
-                "AI provider failed: %s, context=%s, error=%s",
+                "AI provider returned error: %s, elapsed_seconds=%.1f, timeout_seconds=%s, context=%s, error=%s",
                 operation,
+                elapsed_seconds,
+                timeout_seconds,
                 self.settings.safe_log_context(),
                 exc,
             )
-            raise AiProviderError(f"AI调用失败：{operation}") from exc
+            raise AiProviderError(
+                f"{exc}（已等待 {elapsed_seconds:.1f} 秒，本地上限 {timeout_seconds} 秒）"
+            ) from exc
+        except Exception as exc:
+            elapsed_seconds = time.perf_counter() - started_at
+            logger.warning(
+                "AI provider failed: %s, elapsed_seconds=%.1f, timeout_seconds=%s, context=%s, error=%s",
+                operation,
+                elapsed_seconds,
+                timeout_seconds,
+                self.settings.safe_log_context(),
+                exc,
+            )
+            raise AiProviderError(
+                f"AI调用失败：{operation}（已等待 {elapsed_seconds:.1f} 秒，本地上限 {timeout_seconds} 秒；底层错误：{exc}）"
+            ) from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -521,7 +544,7 @@ class OpenAICompatibleAiProvider(AiProvider):
                             "你是中文节日产品海报的生图提示词导演，只返回 JSON，不要 Markdown。"
                             "图片模型只会收到一张产品参考图，不会收到节日参考海报图。"
                             "你必须把参考海报提示词库、当前节点、产品资料和用户需求整合成最终中文生图提示词。"
-                            "提示词必须强调整张海报的统一设计感，让产品、节日元素、标题、品牌区、底部区和整体色调自然融合。"
+                            "提示词必须强调整张海报的统一设计感，让产品、节日元素、标题、品牌区、底部宣传条区和整体色调自然融合。"
                             "最终画面允许生成中文主标题、副标题和艺术字，但语气必须先有节日氛围，再自然带出产品陪伴，"
                             "不要强硬推销，不要绝对化宣传，不要医疗功效承诺，不要让素材像机械贴片。"
                         ),
@@ -534,7 +557,7 @@ class OpenAICompatibleAiProvider(AiProvider):
                                 "required_schema": {
                                     "on_image_title": "不超过18个中文字符，适合艺术字主标题",
                                     "on_image_subtitle": "不超过42个中文字符，柔性带出产品陪伴",
-                                    "scene_prompt": "节日氛围、人物/空间/产品自然融入方式、Logo/底部宣传条/二维码预留或融合方式、整体色调统一方式",
+                                    "scene_prompt": "节日氛围、人物/空间/产品自然融入方式、Logo 区、底部宣传条参考图融合方式、二维码后处理预留方式、整体色调统一方式",
                                     "typography_prompt": "中文艺术字风格、位置、层级、可读性要求，与节日元素和产品画面统一",
                                     "negative_prompt": "禁止英文、乱码、硬广、医疗功效、额外Logo、额外二维码、水印、产品变形、机械贴片、伪造品牌元素",
                                 },
@@ -549,8 +572,10 @@ class OpenAICompatibleAiProvider(AiProvider):
                                     "最终画面是 1080x1920 竖版中文节日产品海报。",
                                     "图片模型只接收产品图，请用文字描述参考海报风格，不要要求模型读取第二张参考图。",
                                     "产品必须像真实物体一样融入场景，有接触面、阴影、环境光和合理比例。",
-                                    "顶部预留或融合 Logo 区，底部预留或融合底部宣传条区；如果没有收到品牌参考图，不要生成 Logo、二维码或宣传条。",
-                                    "二维码采用保真策略：只预留清晰高对比区域，或使用参考二维码的周边视觉但允许后处理精确替换。",
+                                    "顶部预留或融合 Logo 区，但顶部禁止出现宣传条、公司全称、扫码关注、公众号、视频号、二维码槽位或底部信息栏内容。",
+                                    "底部宣传条参考图会以去掉二维码的形式提供给图片模型；只能把它融合在海报底部，不允许移到顶部或中部。",
+                                    "底部宣传条的文字、图标、公众号/视频号标签和整体结构要尽量保持可读；二维码位置保持为干净空白区域，不要生成二维码图案或伪二维码。",
+                                    "二维码采用后处理保真策略：图片模型不要生成任何二维码图案，真实二维码会由本地 Pillow 精准贴回。",
                                     "可生成中文艺术字主标题和副标题；除产品型号外不要出现英文字母。",
                                 ],
                             },
@@ -873,7 +898,7 @@ def build_fallback_reference_prompt_library() -> dict[str, Any]:
             "文字与场景光影融合，但不能变成乱码、错别字或英文。"
         ),
         "composition_rules": (
-            "顶部保留 Logo 安全区，底部保留底部宣传条安全区。"
+            "顶部保留 Logo 安全区，底部保留本地宣传条和二维码后处理所需的干净浅色安全区。"
             "画面中心到中下部用于产品和人物/空间关系，不让产品悬浮或被遮挡。"
         ),
         "negative_prompt": "不要英文硬广、乱码、错别字、价格标签、额外Logo、二维码、水印、医疗功效承诺、绝对化承诺。",
@@ -1136,8 +1161,12 @@ def compose_final_image_prompt(
         f"产品参考：{product.get('name', '')}，品类：{product.get('category', '')}，参考卖点仅作生活化表达：{product_points}。"
         "图片模型只会收到一张产品参考图；产品必须保留真实外观、结构、颜色、比例和材质，"
         "像真实物体一样摆放在餐边柜、厨房台面、客厅边柜或茶水间等合理位置，具有接触面、阴影、遮挡关系和环境光。"
-        "顶部为 Logo 保留自然融入的品牌区，底部为宣传条和二维码保留干净高对比区域；"
+        "顶部为 Logo 保留自然融入的品牌区，只允许出现参考 Logo 或干净品牌留白；"
+        "顶部不要出现宣传条、公司全称、扫码关注、公众号、视频号、二维码槽位或底部信息栏内容。"
+        "底部宣传条参考图会以去掉二维码的形式提供；请只在海报底部自然融合这条宣传条，保留其公司信息、扫码关注、公众号/视频号标签和横向信息结构。"
+        "二维码位置必须保持干净白色或浅色空白，不要生成二维码图案、二维码小方块或伪二维码。"
         "若没有收到对应品牌参考图，只预留区域，不要自行生成 Logo、二维码或宣传条。"
+        "二维码只允许空白占位，不要生成二维码纹理、二维码小方块或伪二维码，真实二维码会在生成后由本地 Pillow 贴回。"
         "除产品型号外不要出现英文字母；所有可见文字都应为清晰中文，不要乱码和错别字。"
         f"{'用户补充需求：' + extra + '。' if extra else ''}"
     )
@@ -1484,7 +1513,7 @@ def relax_negative_prompt_for_brand_assets(negative_prompt: str) -> str:
         if not clean:
             continue
         lowered = clean.lower()
-        if "logo" in lowered or "qrcode" in lowered or "qr code" in lowered or "浜岀淮" in clean:
+        if "logo" in lowered:
             continue
         relaxed.append(clean)
     relaxed.extend(
@@ -1492,7 +1521,7 @@ def relax_negative_prompt_for_brand_assets(negative_prompt: str) -> str:
             "no extra non-reference logos",
             "no distorted brand marks",
             "no invented QR codes",
-            "no unreadable QR code when a QR reference is supplied",
+            "preserve the bottom-strip reference only in the bottom information area, keep its QR holes clean and free of QR-like patterns for exact post-processing overlay",
         ]
     )
     return combine_negative_prompts(*relaxed)
@@ -1638,14 +1667,17 @@ def append_image_constraints(
         f"{prompt}\n\n"
         f"画布比例：竖版 {canvas_size[0]}x{canvas_size[1]}。"
         "请把参考产品自然融入真实营销场景，像原本就在场景里一样，有合理接触面、遮挡关系、阴影、环境光和景深。"
-        "整图必须是一张完整设计稿：节日元素、产品、Logo 区、底部宣传条区、二维码区、标题字和整体色调形成统一视觉系统，"
+        "整图必须是一张完整设计稿：节日元素、产品、Logo 区、底部宣传条区、标题字和整体色调形成统一视觉系统，"
         "边缘、材质、投影、透视和色彩都要一致，不要像后期把素材硬贴上去。"
         "例如春节可生成一家人围坐团圆饭的温暖场景，产品自然放在餐边柜、厨房台面或餐厅角落，不要突兀。"
         "保留参考产品的真实外观、品牌结构、材质和比例，不要把产品变成其他物体。"
         f"顶部和底部预留海报排版安全区：{json.dumps(zones, ensure_ascii=False)}。"
+        "顶部安全区只用于 Logo 或品牌留白，严禁把底部宣传条信息放到顶部。"
+        "底部宣传条参考图只能融合在底部安全区内，保留其横向信息结构；严禁把底部宣传条信息放到顶部。"
         f"二维码策略：{qrcode_policy}。"
-        "画面允许生成清晰中文艺术字主标题和中文副文案；Logo 和底部宣传条只使用参考素材或预留区域，"
-        "不要生成英文、乱码、错别字、额外 Logo、额外二维码、水印、价格标签或促销标签。"
+        "画面允许生成清晰中文艺术字主标题和中文副文案；Logo 和底部宣传条只使用参考素材或预留区域。"
+        "底部宣传条中的二维码位置必须保持干净白色或浅色空白，不要生成任何二维码纹理、二维码小方块、伪二维码、白色二维码卡片或边框。"
+        "不要生成英文、乱码、错别字、额外 Logo、额外二维码、水印、价格标签、促销标签；不要在顶部生成扫码关注、公众号、视频号或公司信息。"
         f"负向约束：{negative_prompt}"
     )
 
@@ -1656,12 +1688,20 @@ def build_brand_fusion_instruction(brand_asset_roles: list[str]) -> str:
             "No brand reference image is supplied except the product. Keep the poster visually complete without inventing logos, QR codes, bottom strips, watermarks, or price tags."
         )
     roles = ", ".join(brand_asset_roles)
+    if brand_asset_roles == ["logo"]:
+        return (
+            f"Additional reference images are supplied for these brand roles: {roles}. "
+            "Use only the supplied logo reference in the top brand area, with matching lighting, color, scale, margins, and layout rhythm. "
+            "No bottom strip reference is supplied to the image model. Leave the lower information-strip area as a clean light/white background only; the exact bottom strip and QR codes will be composited locally after generation. "
+            "Do not place bottom-strip content in the top area, and do not invent QR patterns, extra logos, fake brand marks, watermarks, buttons, company footer text, public-account labels, or video-account labels."
+        )
     return (
         f"Additional reference images are supplied for these brand roles: {roles}. "
         "Use only the supplied brand references and make them feel designed into the same poster, with matching lighting, color, scale, margins, and layout rhythm. "
-        "Logo and bottom strip may be visually blended with the scene background, but their identity and readable structure must be preserved. "
-        "If a QR code reference is supplied, include only one crisp high-contrast QR code area using that reference as the visual source; if the model cannot preserve it cleanly, leave a single clean QR placeholder area instead of inventing extra codes. "
-        "Do not invent extra logos, extra QR codes, fake brand marks, watermarks, buttons, or price tags."
+        "If a bottom_bar reference is supplied, it is the bottom information strip with QR patterns removed. Integrate it only into the bottom strip area of the poster; never copy it into the top logo area or the central scene. "
+        "Preserve the strip's readable company text, scan-follow prompt, public-account/video-account labels, spacing, and horizontal structure as much as possible, while matching the poster lighting and color. "
+        "Keep the QR holes clean and light/white, without QR-like patterns, boxes, cards, borders, or invented codes, so exact QR codes can be overlaid after generation. "
+        "Do not invent extra logos, fake brand marks, watermarks, buttons, or price tags."
     )
 
 
@@ -1675,12 +1715,8 @@ def build_asset_roles(brand_asset_roles: list[str]) -> list[str]:
 
 
 def build_qrcode_policy(brand_asset_roles: list[str]) -> str:
-    if "qrcode" in {sanitize_reference_role(role) for role in brand_asset_roles}:
-        return (
-            "use the supplied qrcode as the only qrcode-like visual in the poster; keep it crisp, high-contrast, and avoid adding any extra qrcode"
-        )
     return (
-        "do not generate or hallucinate any qrcode pattern; if a contact area is needed, leave one clean high-contrast placeholder block"
+        "do not generate or hallucinate any qrcode pattern; integrate the supplied QR-removed bottom strip only at the bottom; keep QR holes clean light/white for exact Pillow overlay; no white QR cards, borders, or QR-like patterns from the image model"
     )
 
 

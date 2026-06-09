@@ -21,6 +21,41 @@ NODE_ALIASES: dict[str, list[str]] = {
     "node_618": ["618", "年中", "大促"],
     "node_anniversary": ["周年", "周年庆", "庆典", "答谢"],
 }
+NODE_ALIASES.update(
+    {
+        "node_qingming": ["清明", "清明节", "踏青", "青团"],
+        "node_chongyang": ["重阳", "重阳节", "敬老节", "登高", "菊花"],
+        "node_dragon_boat": ["端午", "端午节", "粽子", "龙舟", "艾草", "dragon boat festival"],
+        "node_qixi": ["七夕", "七夕节", "乞巧节"],
+        "node_new_year_day": ["元旦", "跨年", "阳历新年"],
+        "node_labor_day": ["五一", "劳动节", "五一劳动节"],
+        "node_teacher_day": ["教师节", "老师", "教师"],
+        "node_mothers_day": ["母亲节", "妈妈", "母亲"],
+        "node_fathers_day": ["父亲节", "爸爸", "父亲"],
+        "node_laba": ["腊八", "腊八节", "腊八粥"],
+        "node_xiaonian": ["小年", "北方小年", "南方小年"],
+        "node_yushui": ["雨水", "雨水节气"],
+        "node_jingzhe": ["惊蛰", "惊蛰节气"],
+        "node_chunfen": ["春分", "春分节气"],
+        "node_guyu": ["谷雨", "谷雨节气"],
+        "node_lixia": ["立夏", "立夏节气"],
+        "node_xiaoman": ["小满", "小满节气"],
+        "node_mangzhong": ["芒种", "芒种节气"],
+        "node_xiazhi": ["夏至", "夏至节气"],
+        "node_xiaoshu": ["小暑", "小暑节气"],
+        "node_dashu": ["大暑", "大暑节气"],
+        "node_liqiu": ["立秋", "立秋节气"],
+        "node_chushu": ["处暑", "处暑节气"],
+        "node_bailu": ["白露", "白露节气"],
+        "node_qiufen": ["秋分", "秋分节气"],
+        "node_hanlu": ["寒露", "寒露节气"],
+        "node_shuangjiang": ["霜降", "霜降节气"],
+        "node_xiaoxue": ["小雪", "小雪节气"],
+        "node_daxue": ["大雪", "大雪节气"],
+        "node_xiaohan": ["小寒", "小寒节气"],
+        "node_dahan": ["大寒", "大寒节气"],
+    }
+)
 
 STYLE_KEYWORDS = [
     "温馨",
@@ -38,6 +73,11 @@ STYLE_KEYWORDS = [
     "促销",
     "商务",
     "家庭",
+    "秋日",
+    "清雅",
+    "童趣",
+    "温暖",
+    "淡雅",
 ]
 
 VISUAL_ELEMENTS = [
@@ -57,6 +97,28 @@ VISUAL_ELEMENTS = [
     "花瓣",
     "雪",
     "绿植",
+    "菊花",
+    "老人",
+    "长辈",
+    "登高",
+    "山景",
+    "秋叶",
+    "青团",
+    "踏青",
+    "春雨",
+    "柳枝",
+    "粽子",
+    "粽叶",
+    "龙舟",
+    "艾草",
+    "荷花",
+    "荷叶",
+    "麦穗",
+    "露珠",
+    "霜叶",
+    "儿童",
+    "气球",
+    "玩具",
 ]
 
 ACTIVITY_KEYWORDS = [
@@ -68,6 +130,7 @@ ACTIVITY_KEYWORDS = [
     "元宵",
     "lantern festival",
     "清明",
+    "清明节",
     "五一",
     "劳动节",
     "端午",
@@ -80,11 +143,26 @@ ACTIVITY_KEYWORDS = [
     "国庆",
     "national day",
     "重阳",
+    "重阳节",
+    "七夕",
+    "七夕节",
+    "元旦",
+    "腊八",
+    "腊八节",
+    "小年",
+    "教师节",
+    "母亲节",
+    "父亲节",
     "冬至",
     "winter solstice",
     "立春",
     "start of spring",
+    "雨水",
+    "惊蛰",
+    "春分",
+    "谷雨",
     "立夏",
+    "夏至",
     "立秋",
     "立冬",
     "start of winter",
@@ -94,7 +172,9 @@ ACTIVITY_KEYWORDS = [
     "大暑",
     "处暑",
     "白露",
+    "秋分",
     "寒露",
+    "霜降",
     "小雪",
     "大雪",
     "小寒",
@@ -111,6 +191,49 @@ ACTIVITY_KEYWORDS = [
     "新品发布",
 ]
 
+NODE_PROMPT_PROFILES: dict[str, dict[str, list[str]]] = {
+    "node_chongyang": {
+        "styles": ["秋日暖色", "温馨", "高级"],
+        "elements": ["菊花", "老人", "登高", "长辈关怀"],
+    },
+    "node_qingming": {
+        "styles": ["清雅", "自然", "淡雅"],
+        "elements": ["春雨", "柳枝", "青团", "踏青"],
+    },
+    "node_dragon_boat": {
+        "styles": ["清爽", "自然", "节日感"],
+        "elements": ["粽叶", "粽子", "艾草", "水波"],
+    },
+    "node_mid_autumn": {
+        "styles": ["团圆", "温馨", "金色质感"],
+        "elements": ["月亮", "月饼", "桂花", "团圆"],
+    },
+    "node_spring_festival": {
+        "styles": ["喜庆", "温馨", "红金"],
+        "elements": ["灯笼", "团圆饭", "窗花", "烟花"],
+    },
+    "node_lantern_festival": {
+        "styles": ["喜庆", "温馨", "暖色"],
+        "elements": ["灯笼", "汤圆", "灯会"],
+    },
+    "node_labor_day": {
+        "styles": ["明亮", "清爽", "假日感"],
+        "elements": ["城市生活", "出游", "家庭空间"],
+    },
+    "node_teacher_day": {
+        "styles": ["温馨", "清雅", "感恩"],
+        "elements": ["书桌", "花束", "讲台"],
+    },
+    "node_mothers_day": {
+        "styles": ["温馨", "柔和", "家庭"],
+        "elements": ["鲜花", "客厅", "家人陪伴"],
+    },
+    "node_fathers_day": {
+        "styles": ["沉稳", "温暖", "家庭"],
+        "elements": ["客厅", "父亲", "家人陪伴"],
+    },
+}
+
 
 def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
     instruction = normalize_instruction(raw_instruction)
@@ -118,7 +241,7 @@ def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
     product_candidates = rank_products(raw_instruction, products)
     node_candidates = rank_nodes(raw_instruction)
     style_keywords = find_terms(raw_instruction, STYLE_KEYWORDS)
-    visual_elements = find_terms(raw_instruction, VISUAL_ELEMENTS)
+    visual_elements = merge_unique(find_terms(raw_instruction, VISUAL_ELEMENTS), extract_visual_element_phrases(raw_instruction))
     product_hint = extract_product_hint(raw_instruction, node_candidates)
     node = node_candidates[0]["node"] if node_candidates else None
     product = product_candidates[0]["product"] if product_candidates else None
@@ -133,6 +256,8 @@ def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
         style_keywords = fallback_style_keywords(node)
     if not visual_elements:
         visual_elements = fallback_visual_elements(node)
+    else:
+        visual_elements = merge_unique(visual_elements, fallback_visual_elements(node))
 
     product_assets = list_product_assets(product["id"]) if product else []
     if product and not product_assets:
@@ -141,6 +266,13 @@ def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
     resolved_node = node or build_custom_node(activity_hint or raw_instruction)
     scene_prompt = build_scene_prompt(
         instruction=instruction,
+        node=resolved_node,
+        product=product,
+        product_hint=product_hint,
+        style_keywords=style_keywords,
+        visual_elements=visual_elements,
+    )
+    prompt_variants = build_prompt_variants(
         node=resolved_node,
         product=product,
         product_hint=product_hint,
@@ -164,6 +296,7 @@ def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
             "copy_direction": resolved_node.get("copy_direction", ""),
             "visual_direction": resolved_node.get("visual_direction", ""),
             "scene_prompt": scene_prompt,
+            "prompt_variants": prompt_variants,
             "custom_requirement": custom_requirement,
         },
         "matches": {
@@ -213,6 +346,41 @@ def find_terms(text: str, terms: list[str]) -> list[str]:
         if normalize_match_text(term) in normalized and term not in found:
             found.append(term)
     return found[:8]
+
+
+def merge_unique(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            clean = str(item).strip()
+            if clean and clean not in merged:
+                merged.append(clean)
+    return merged[:10]
+
+
+def extract_visual_element_phrases(raw_instruction: str) -> list[str]:
+    elements: list[str] = []
+    patterns = [
+        r"(?:要有|需要有|包含|体现|突出|加入|加上)(.{1,36}?)(?:的体现|体现|元素|画面|氛围|。|，|,|$)",
+        r"(?:有|带有)(.{1,24}?)(?:的体现|元素|。|，|,|$)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, raw_instruction):
+            chunk = match.group(1)
+            for part in re.split(r"[和与、/，,及以及\s]+", chunk):
+                clean = cleanup_visual_element(part)
+                if clean and clean not in elements:
+                    elements.append(clean)
+    return elements[:8]
+
+
+def cleanup_visual_element(value: str) -> str:
+    cleaned = re.sub(r"(一点|一些|体现|画面|元素|感觉|氛围|必须|需要|要有|有)", "", value or "")
+    cleaned = cleaned.strip(" ，。、“”‘’的了吧呢")
+    if len(cleaned) < 2 or len(cleaned) > 12:
+        return ""
+    generic = {"宣传图", "海报", "产品", "节日", "风格", "主题"}
+    return "" if cleaned in generic else cleaned
 
 
 def rank_products(raw_instruction: str, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -313,6 +481,7 @@ def cleanup_product_hint(value: str) -> str:
     cleaned = re.sub(r"(我要|我想要|制作|生成|做|一个|一张|宣传图|海报|给|为|朴道|PUDOW)", "", value)
     for activity in ACTIVITY_KEYWORDS:
         cleaned = cleaned.replace(activity, "")
+    cleaned = re.sub(r"(节|节日|活动|主题)$", "", cleaned)
     cleaned = cleaned.strip(" ，。、“”‘’的")
     return cleaned[:40]
 
@@ -338,6 +507,9 @@ def default_brand_assets() -> dict[str, Any]:
 def fallback_style_keywords(node: dict[str, Any] | None) -> list[str]:
     if not node:
         return ["自然", "高级"]
+    profile = NODE_PROMPT_PROFILES.get(str(node.get("id") or ""))
+    if profile and profile.get("styles"):
+        return profile["styles"][:4]
     text = f"{node.get('visual_direction', '')} {' '.join(node.get('keywords', []))}"
     return find_terms(text, STYLE_KEYWORDS) or [str(node.get("visual_direction") or "品牌统一")]
 
@@ -346,13 +518,50 @@ def fallback_visual_elements(node: dict[str, Any] | None) -> list[str]:
     if not node:
         return []
     node_id = node.get("id", "")
+    profile = NODE_PROMPT_PROFILES.get(str(node_id))
+    if profile and profile.get("elements"):
+        return profile["elements"][:6]
     if node_id == "node_mid_autumn":
         return ["月亮", "月饼", "团圆"]
     if node_id == "node_spring_festival":
         return ["灯笼", "团圆饭"]
     if node_id == "node_lantern_festival":
         return ["灯笼", "汤圆"]
-    return []
+    keywords = [str(item) for item in node.get("keywords", []) or []]
+    return [item for item in keywords if item not in {"健康水", "健康饮水", "好水相伴"}][:4]
+
+
+def build_prompt_variants(
+    *,
+    node: dict[str, Any],
+    product: dict[str, Any] | None,
+    product_hint: str,
+    style_keywords: list[str],
+    visual_elements: list[str],
+) -> list[dict[str, str]]:
+    product_name = product.get("name") if product else product_hint or "产品"
+    node_name = str(node.get("name") or "节日")
+    styles = "、".join(style_keywords[:4]) or str(node.get("visual_direction") or "节日氛围")
+    elements = "、".join(visual_elements[:6]) or "节日代表元素"
+    variants = [
+        {
+            "name": "生活场景融合",
+            "prompt": (
+                f"生成一张1080x1920竖版中文节日产品海报，主题为{node_name}，"
+                f"把{product_name}自然放入真实生活空间，整体风格为{styles}，"
+                f"画面出现{elements}，中文标题清晰，底部二维码只保留空白占位。"
+            ),
+        },
+        {
+            "name": "节日氛围特写",
+            "prompt": (
+                f"生成一张完整中文营销海报，以{node_name}节日氛围为主，"
+                f"用{elements}建立情绪和层次，{product_name}保持真实外观并与场景光影一致，"
+                "底部宣传区自然融入但二维码区域留空，后续贴入真实二维码。"
+            ),
+        },
+    ]
+    return variants
 
 
 def build_custom_node(raw_instruction: str) -> dict[str, Any]:
@@ -385,7 +594,7 @@ def build_scene_prompt(
         f"整体风格：{'、'.join(style_keywords) if style_keywords else node.get('visual_direction', '')}。",
         f"画面元素：{'、'.join(visual_elements) if visual_elements else '结合活动氛围自然设计'}。",
         "产品、Logo、底部宣传条与场景色调、光影、透视和版式要统一，不能像后贴上去。",
-        "二维码区域要保持高对比、清晰、可扫码，不要生成额外二维码或错误二维码。",
+        "二维码区域只生成干净白色或浅色空白占位，不要生成任何二维码纹理、伪二维码或错误二维码。",
         "中文标题清晰可读，不要英文、乱码、水印、价格标签或夸大医疗功效表达。",
     ]
     if product_points:
@@ -403,7 +612,7 @@ def build_custom_requirement(*, raw_instruction: str, style_keywords: list[str],
             f"风格关键词：{'、'.join(style_keywords)}" if style_keywords else "",
             f"画面元素：{'、'.join(visual_elements)}" if visual_elements else "",
             "一键整图融合模式，避免产品、Logo、底部条与背景割裂",
-            "二维码采用保真融合策略，优先确保可扫码",
+            "二维码采用空白占位加本地精准贴码策略，AI 生图阶段不要生成二维码图案",
         ]
         if item
     )

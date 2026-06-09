@@ -1,6 +1,6 @@
 const TASK_STATUSES = new Set(["pending", "processing", "success", "failed"]);
 const AI_IMAGE_WARNING_MS = 10000;
-const AI_IMAGE_MAX_POLL_MS = 240000;
+const AI_IMAGE_MAX_POLL_MS = 600000;
 const POLL_INTERVAL_MS = 2500;
 const POLL_INTERVAL_SLOW_MS = 5000;
 const TASK_STEP_LABELS = {
@@ -44,7 +44,7 @@ const state = {
   },
   selectedAssets: {
     logo: null,
-    qrcode: null,
+    qrcode: [],
     bottom_bar: null,
   },
   productAssets: [],
@@ -356,7 +356,7 @@ function renderSummary() {
   const pieces = [];
   pieces.push(state.selectedAssets.logo ? "Logo已选" : "Logo未选");
   pieces.push(state.selectedAssets.bottom_bar ? "底部条已选" : "底部条未选");
-  pieces.push(state.selectedAssets.qrcode ? "已额外添加二维码" : "二维码默认不单独添加");
+  pieces.push(selectedQrcodes().length ? `已选${selectedQrcodes().length}个二维码` : "二维码使用系统默认精准贴码");
   els.summarySystemAssets.textContent = pieces.join("，");
 
   if (!state.activeTask) {
@@ -694,18 +694,31 @@ function renderAssetChoices() {
     : "未选择底部条。MVP不会伪造默认素材，请上传或等待后端 seed 默认底部条。";
 }
 
+function selectedQrcodes() {
+  return Array.isArray(state.selectedAssets.qrcode) ? state.selectedAssets.qrcode : [];
+}
+
+function toggleQrcodeSelection(asset) {
+  const selected = selectedQrcodes();
+  if (selected.some((item) => item.id === asset.id)) {
+    state.selectedAssets.qrcode = selected.filter((item) => item.id !== asset.id);
+    return;
+  }
+  state.selectedAssets.qrcode = [...selected, asset].slice(0, 4);
+}
+
 function renderChoiceGrid(assetType, grid) {
   grid.innerHTML = "";
   const assets = state.systemAssets[assetType];
   if (assetType === "qrcode") {
     const noneCard = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
     noneCard.classList.add("qrcode-choice");
-    noneCard.classList.toggle("selected", !state.selectedAssets.qrcode);
+    noneCard.classList.toggle("selected", selectedQrcodes().length === 0);
     noneCard.querySelector(".choice-thumb").textContent = "默认";
     noneCard.querySelector("strong").textContent = "不单独添加二维码";
-    noneCard.querySelector("small").textContent = "使用底部宣传条中的二维码信息";
+    noneCard.querySelector("small").textContent = "使用系统默认二维码精准贴入底部占位";
     noneCard.addEventListener("click", () => {
-      state.selectedAssets.qrcode = null;
+      state.selectedAssets.qrcode = [];
       renderAssetChoices();
       renderSummary();
     });
@@ -723,7 +736,10 @@ function renderChoiceGrid(assetType, grid) {
   assets.forEach((asset) => {
     const card = assetChoiceTemplate.content.firstElementChild.cloneNode(true);
     card.classList.add(`${assetType}-choice`);
-    card.classList.toggle("selected", state.selectedAssets[assetType]?.id === asset.id);
+    const selected = assetType === "qrcode"
+      ? selectedQrcodes().some((item) => item.id === asset.id)
+      : state.selectedAssets[assetType]?.id === asset.id;
+    card.classList.toggle("selected", selected);
     const thumb = card.querySelector(".choice-thumb");
     const img = document.createElement("img");
     img.src = resolveReturnedUrl(asset.public_url);
@@ -737,8 +753,8 @@ function renderChoiceGrid(assetType, grid) {
     card.querySelector("strong").textContent = asset.name || asset.file_name || asset.id;
     card.querySelector("small").textContent = asset.asset_type || assetType;
     card.addEventListener("click", () => {
-      if (assetType === "qrcode" && state.selectedAssets.qrcode?.id === asset.id) {
-        state.selectedAssets.qrcode = null;
+      if (assetType === "qrcode") {
+        toggleQrcodeSelection(asset);
       } else {
         state.selectedAssets[assetType] = asset;
       }
@@ -1174,6 +1190,8 @@ async function createPosterTask() {
       : { scene_asset_id: null, product_asset_ids: state.productAssets.map((asset) => asset.id) };
   storeCurrentNodePreference();
   const nodeFields = buildNodePayloadFields();
+  const qrcodeSelections = selectedQrcodes();
+  const qrcodePayloadAssets = qrcodeSelections.length ? qrcodeSelections : state.systemAssets.qrcode.slice(0, 2);
 
   const payload = {
     node_id: state.selectedNode.id,
@@ -1181,7 +1199,6 @@ async function createPosterTask() {
     template_id: els.templateInput.value.trim() || "template_v1_vertical_standard",
     ...assetPayload,
     logo_asset_id: state.selectedAssets.logo.id,
-    qrcode_asset_id: state.selectedAssets.qrcode?.id || null,
     bottom_bar_asset_id: state.selectedAssets.bottom_bar.id,
     contact_text: els.contactInput.value.trim(),
     scene_prompt: buildScenePrompt(),
@@ -1193,6 +1210,10 @@ async function createPosterTask() {
       subtitle: subtitlePreference,
     },
   };
+  if (qrcodePayloadAssets.length) {
+    payload.qrcode_asset_id = qrcodePayloadAssets[0].id;
+    payload.qrcode_asset_ids = qrcodePayloadAssets.map((asset) => asset.id);
+  }
 
   els.createTaskBtn.disabled = true;
   showMessage(els.taskMessage, "正在创建海报生成任务...");
@@ -1652,7 +1673,7 @@ function renderCompliance() {
 function renderPreviewSelects() {
   const sourceAssets = state.sourceMode === "scene_image" ? (state.sceneAsset ? [state.sceneAsset] : []) : state.productAssets;
   renderSelectFromAssets(els.previewProductAssetSelect, sourceAssets, state.sourceMode === "scene_image" ? "整张场景图" : "产品图");
-  renderSelectFromAssets(els.previewQrcodeSelect, state.systemAssets.qrcode, "二维码", state.selectedAssets.qrcode?.id, {
+  renderSelectFromAssets(els.previewQrcodeSelect, state.systemAssets.qrcode, "二维码", selectedQrcodes()[0]?.id, {
     allowNone: true,
     noneLabel: "不单独添加二维码",
   });

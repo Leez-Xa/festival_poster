@@ -69,6 +69,8 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
         visual_elements,
     )
 
+    qrcode_asset_ids = choose_qrcode_asset_ids(overrides)
+    bottom_bar_asset_id = overrides.bottom_bar_asset_id or choose_first_asset_id("bottom_bar") or "asset_bottom_default"
     task_payload = PosterTaskCreate(
         node_id=node_id,
         product_id=product_id,
@@ -81,15 +83,16 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
         scene_asset_id=scene_asset_id,
         product_asset_ids=product_asset_ids,
         logo_asset_id=overrides.logo_asset_id,
-        qrcode_asset_id=overrides.qrcode_asset_id if overrides.qrcode_asset_id is not None else choose_first_asset_id("qrcode"),
-        bottom_bar_asset_id=overrides.bottom_bar_asset_id,
+        qrcode_asset_id=qrcode_asset_ids[0] if qrcode_asset_ids else None,
+        qrcode_asset_ids=qrcode_asset_ids,
+        bottom_bar_asset_id=bottom_bar_asset_id,
         contact_text=overrides.contact_text or "",
         scene_prompt=scene_prompt,
         custom_requirement=custom_requirement,
         raw_instruction=parsed["raw_instruction"],
         resolved_intent=parsed,
         render_mode=overrides.render_mode or "full_fusion",
-        qrcode_policy=overrides.qrcode_policy or "preserve_fusion",
+        qrcode_policy=overrides.qrcode_policy or "optional_overlay",
         copy_preference=overrides.copy_preference or CopyPreference(mode="ai"),
     )
 
@@ -100,7 +103,8 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
         "scene_asset_id": task_payload.scene_asset_id,
         "logo_asset_id": task_payload.logo_asset_id or "asset_logo_original",
         "qrcode_asset_id": task_payload.qrcode_asset_id,
-        "bottom_bar_asset_id": task_payload.bottom_bar_asset_id or "asset_bottom_default",
+        "qrcode_asset_ids": task_payload.qrcode_asset_ids,
+        "bottom_bar_asset_id": task_payload.bottom_bar_asset_id,
     }
     prompt_diagnostics = build_one_click_prompt_diagnostics(
         raw_instruction=parsed["raw_instruction"],
@@ -121,7 +125,7 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
         "visual_elements": visual_elements,
         "selected": selected_assets,
         "render_mode": task_payload.render_mode,
-        "qrcode_policy": task_payload.qrcode_policy,
+        "task_qrcode_policy": task_payload.qrcode_policy,
         "confidence": parsed["confidence"],
         "warnings": parsed["warnings"],
     }
@@ -137,6 +141,28 @@ def choose_product_asset_ids(product_id: str, overrides: OneClickPosterOverrides
 def choose_first_asset_id(asset_type: str) -> str | None:
     assets = list_assets(asset_type=asset_type)
     return assets[0]["id"] if assets else None
+
+
+def choose_qrcode_asset_ids(overrides: OneClickPosterOverrides) -> list[str]:
+    if overrides.qrcode_asset_ids is not None:
+        return overrides.qrcode_asset_ids[:4]
+    if overrides.qrcode_asset_id is not None:
+        return [overrides.qrcode_asset_id] if overrides.qrcode_asset_id else []
+    qrcodes = list_assets(asset_type="qrcode")
+    preferred_names = ("朴道公众号", "朴道官方视频号", "公众号", "视频号")
+    selected: list[str] = []
+    for name in preferred_names:
+        for asset in qrcodes:
+            asset_name = f"{asset.get('name', '')} {asset.get('file_name', '')}"
+            if name in asset_name and asset["id"] not in selected:
+                selected.append(asset["id"])
+                break
+    for asset in qrcodes:
+        if len(selected) >= 2:
+            break
+        if asset["id"] not in selected:
+            selected.append(asset["id"])
+    return selected[:2]
 
 
 def build_custom_requirement(raw_instruction: str, style_keywords: list[str], visual_elements: list[str]) -> str:

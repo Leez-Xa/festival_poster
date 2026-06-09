@@ -295,8 +295,8 @@ def validate_intent_payload(intent: dict[str, Any]) -> None:
 
 def run_one_click_flow(results: list[CheckResult], fixtures: dict[str, Any], legacy: dict[str, Any]) -> None:
     instruction = (
-        "Create a warm Spring Festival poster for K2 purifier. Use a family reunion dinner scene, "
-        "integrate product, logo, bottom bar and QR code, with safe restrained Chinese marketing copy."
+        "春节给名士K2饮水机做家庭年夜饭场景海报，活动是新年健康饮水焕新季，"
+        "温暖喜庆但不要俗气，红金点缀，包含团圆餐桌、水汽、灯笼、产品和扫码了解优惠。"
     )
     intent = expect_json("POST", f"{API_PREFIX}/one-click-intent", {"raw_instruction": instruction})
     validate_intent_payload(intent)
@@ -319,7 +319,7 @@ def run_one_click_flow(results: list[CheckResult], fixtures: dict[str, Any], leg
         "product_asset_ids": [legacy["uploaded_product_asset_id"]],
         "logo_asset_id": choose(fixtures["logos"], "logo")["id"],
         "bottom_bar_asset_id": choose(fixtures["bottom_bars"], "bottom bar")["id"],
-        "qrcode_asset_id": fixtures["qrcodes"][0]["id"] if fixtures["qrcodes"] else None,
+        "qrcode_asset_ids": [asset["id"] for asset in fixtures["qrcodes"][:2]],
     }
     created = expect_json(
         "POST",
@@ -335,6 +335,16 @@ def run_one_click_flow(results: list[CheckResult], fixtures: dict[str, Any], leg
     for field in ("positive_prompt", "negative_prompt", "final_image_prompt", "asset_roles", "qrcode_policy"):
         if field not in diagnostics:
             raise SmokeFailure(f"one-click prompt diagnostics missing `{field}`")
+    if "bottom_bar" not in (diagnostics.get("asset_roles") or []):
+        raise SmokeFailure("one-click prompt diagnostics did not include QR-removed bottom_bar as image model asset role")
+    for snippet in (
+        "去掉二维码后的底部宣传条会作为模型参考",
+        "底部宣传条必须只融合在海报底部",
+        "顶部禁止出现扫码关注、公众号、视频号、公司信息、二维码槽位或底部宣传条内容",
+        "真实二维码会由本地 Pillow 贴回",
+    ):
+        if snippet not in (diagnostics.get("final_image_prompt") or ""):
+            raise SmokeFailure(f"one-click prompt diagnostics missing bottom-bar guardrail: {snippet}")
     if selected.get("product_id") != product["id"]:
         raise SmokeFailure("one-click task did not use override product_id")
     if selected.get("node_id") != node["id"]:
@@ -350,8 +360,16 @@ def run_one_click_flow(results: list[CheckResult], fixtures: dict[str, Any], leg
         raise SmokeFailure("one-click composition returned unexpected product_id")
     if legacy["uploaded_product_asset_id"] not in asset_ids.get("product_asset_ids", []):
         raise SmokeFailure("one-click composition did not include override product asset")
-    if fusion.get("final_layout_engine") != "ai_final_image_no_local_overlay":
-        raise SmokeFailure("one-click flow did not use AI final image mode")
+    if fusion.get("final_layout_engine") != "ai_scene_with_pillow_exact_qrcode_overlay":
+        raise SmokeFailure("one-click flow did not use exact qrcode overlay mode")
+    overlay = fusion.get("exact_qrcode_overlay") or {}
+    if fixtures["qrcodes"] and not overlay.get("enabled"):
+        raise SmokeFailure("one-click flow did not enable exact qrcode overlay")
+    if "bottom_bar" not in (fusion.get("asset_roles") or []):
+        raise SmokeFailure("runtime image fusion did not include QR-removed bottom_bar as image model asset role")
+    if "bottom_bar" not in (fusion.get("brand_asset_roles") or []):
+        raise SmokeFailure("runtime image fusion did not include bottom_bar in brand reference roles")
+    assert_qrcode_placements_inside_bottom_bar(fusion)
     record(
         results,
         "one_click_poster_task",
@@ -365,6 +383,33 @@ def run_one_click_flow(results: list[CheckResult], fixtures: dict[str, Any], leg
         brand_asset_roles=fusion.get("brand_asset_roles"),
         final_layout_engine=fusion.get("final_layout_engine"),
     )
+
+
+def assert_qrcode_placements_inside_bottom_bar(fusion: dict[str, Any]) -> None:
+    safe_zones = fusion.get("safe_zones") or {}
+    bottom_bar = safe_zones.get("bottom_bar")
+    overlay = fusion.get("exact_qrcode_overlay") or {}
+    placements = overlay.get("placements") or []
+    if not bottom_bar or not placements:
+        raise SmokeFailure("one-click qrcode overlay missing bottom bar or placement metadata")
+    boxes = [placement.get("box") for placement in placements if placement.get("pasted")]
+    if len(boxes) < 2:
+        raise SmokeFailure(f"expected two pasted QR placements, got {len(boxes)}")
+    for box in boxes:
+        if not box_inside(box, bottom_bar):
+            raise SmokeFailure(f"QR placement {box} is outside bottom bar {bottom_bar}")
+    for index, first in enumerate(boxes):
+        for second in boxes[index + 1 :]:
+            if boxes_overlap(first, second):
+                raise SmokeFailure(f"QR placements overlap: {boxes}")
+
+
+def box_inside(inner: list[int], outer: list[int]) -> bool:
+    return inner[0] >= outer[0] and inner[1] >= outer[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
+def boxes_overlap(a: list[int], b: list[int]) -> bool:
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
 def start_server_if_needed() -> subprocess.Popen[str] | None:

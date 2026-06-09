@@ -19,7 +19,7 @@ class PromptDiagnostics:
     final_image_prompt: str
     asset_roles: list[str] = field(default_factory=lambda: ["product"])
     qrcode_policy: str = "reserve_clean_area_for_exact_overlay"
-    fusion_strategy: str = "ai_full_poster_fusion_with_exact_brand_overlay"
+    fusion_strategy: str = "ai_full_poster_fusion_with_qr_removed_bottom_bar_reference"
     notes: list[str] = field(default_factory=list)
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -56,20 +56,22 @@ def build_one_click_prompt_diagnostics(
         f"风格和画面元素：{style_text}。"
         f"具体场景：{scene_prompt}。"
         f"补充要求：{custom_requirement}。"
-        "产品、Logo、底部宣传条、二维码预留区、节日元素、中文标题和整体色调必须像一张完整设计稿，"
+        "产品、Logo、底部宣传条、节日元素、中文标题和整体色调必须像一张完整设计稿，"
         "通过统一光影、透视、材质、留白、层级和色彩自然融合，避免机械拼贴。"
         "产品必须保持真实外观、结构、颜色、比例和材质，像原本就在餐边柜、厨房台面、客厅边柜或茶水间里一样。"
         "中文主标题和副标题要清晰可读，先表达节日氛围，再自然带出产品陪伴。"
-        "Logo、底部宣传条和二维码只使用已选参考素材作为视觉参考，不生成额外品牌元素或额外二维码。"
+        "Logo 和去掉二维码后的底部宣传条会作为模型参考；底部宣传条必须只融合在海报底部，不能移动到顶部或中部。"
+        "顶部禁止出现扫码关注、公众号、视频号、公司信息、二维码槽位或底部宣传条内容；"
+        "底部宣传条要保留可读文字、图标、公众号/视频号标签和横向结构；二维码位置只保留干净空白，真实二维码会由本地 Pillow 贴回。"
         f"二维码策略：{qrcode_policy}。"
     )
     final_image_prompt = (
         f"{positive_prompt}"
-        "最终图片模型应优先理解并融合整张海报视觉系统；输出图将直接作为最终海报使用，不再进行本地二次拼贴。"
+        "最终图片模型应生成一张已融合底部宣传条且二维码位置留白干净的完整海报；真实二维码将在生成后由本地 Pillow 精准贴入。"
     )
     notes = [
         "one-click planned diagnostics; runtime AI provider may refine copy and final prompt",
-        "one-click output uses the AI-generated final poster directly without local overlay",
+        "qrcode images are not sent to the image model; final qrcode pixels are overlaid locally",
     ]
     return PromptDiagnostics(
         positive_prompt=positive_prompt,
@@ -88,15 +90,17 @@ def infer_asset_roles(selected_assets: dict[str, Any]) -> list[str]:
     if selected_assets.get("bottom_bar_asset_id"):
         roles.append("bottom_bar")
     if selected_assets.get("qrcode_asset_id"):
-        roles.append("qrcode")
-    return roles
+        roles.append("qrcode_overlay")
+    if selected_assets.get("qrcode_asset_ids"):
+        roles.append("qrcode_overlay")
+    deduped: list[str] = []
+    for role in roles:
+        if role not in deduped:
+            deduped.append(role)
+    return deduped
 
 
 def build_qrcode_policy(asset_roles: list[str]) -> str:
-    if "qrcode" in asset_roles:
-        return (
-            "use supplied qrcode as the only qrcode-like visual; keep one crisp high-contrast code area and do not add extra qrcodes"
-        )
     return (
-        "do not generate or hallucinate any qrcode pattern; leave one clean placeholder/contact area only if needed"
+        "do not generate or hallucinate any qrcode pattern; integrate the supplied QR-removed bottom strip only at the bottom; keep QR holes clean light/white for exact Pillow overlay; no white QR cards, borders, or QR-like patterns from the image model"
     )
