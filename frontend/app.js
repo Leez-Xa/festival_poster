@@ -1,6 +1,6 @@
 const TASK_STATUSES = new Set(["pending", "processing", "success", "failed"]);
 const AI_IMAGE_WARNING_MS = 10000;
-const AI_IMAGE_MAX_POLL_MS = 600000;
+const AI_IMAGE_MAX_POLL_MS = 1200000;
 const POLL_INTERVAL_MS = 2500;
 const POLL_INTERVAL_SLOW_MS = 5000;
 const TASK_STEP_LABELS = {

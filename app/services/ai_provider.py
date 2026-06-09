@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CANVAS_SIZE = (1080, 1920)
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_PROVIDER_JSON_BYTES = 80 * 1024 * 1024
 REFERENCE_POSTER_DIR = ROOT_DIR / "素材" / "节日节气海报"
 REFERENCE_PROMPT_CACHE = PROMPT_CACHE_DIR / "reference_posters.json"
 REFERENCE_PROMPT_VERSION = "reference_prompt_v2_chinese_art_text"
@@ -1537,6 +1538,16 @@ def post_openai_compatible_json(
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    started_at = time.perf_counter()
+    logger.info(
+        "AI provider request start: mode=json, endpoint=%s, url=%s, body_bytes=%s, body_keys=%s, prompt_chars=%s, timeout_seconds=%s",
+        endpoint,
+        provider_url_log_label(url),
+        len(data),
+        sorted(body.keys()),
+        len(str(body.get("prompt") or "")),
+        timeout_seconds,
+    )
     request = urllib.request.Request(
         url,
         data=data,
@@ -1548,7 +1559,7 @@ def post_openai_compatible_json(
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return read_provider_json_response(response, operation=f"json:{endpoint}", started_at=started_at)
     except urllib.error.HTTPError as exc:
         raise AiProviderError(f"中转站 HTTP 错误：{exc.code}") from exc
     except urllib.error.URLError as exc:
@@ -1570,6 +1581,7 @@ def post_openai_compatible_multipart_json(
     url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
     boundary = f"----festival-poster-{uuid4().hex}"
     body = bytearray()
+    attached_images: list[dict[str, Any]] = []
 
     for key, value in fields.items():
         if value is None or value == "":
@@ -1585,6 +1597,8 @@ def post_openai_compatible_multipart_json(
         field_name = image_field
         if "{index}" in field_name:
             field_name = field_name.replace("{index}", str(index))
+        image_bytes = image_path.read_bytes()
+        attached_images.append({"field": field_name, "name": image_path.name, "bytes": len(image_bytes)})
         body.extend(f"--{boundary}\r\n".encode("utf-8"))
         body.extend(
             (
@@ -1593,10 +1607,25 @@ def post_openai_compatible_multipart_json(
             ).encode("utf-8")
         )
         body.extend(b"Content-Type: image/png\r\n\r\n")
-        body.extend(image_path.read_bytes())
+        body.extend(image_bytes)
         body.extend(b"\r\n")
 
     body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    started_at = time.perf_counter()
+    active_fields = [key for key, value in fields.items() if value is not None and value != ""]
+    logger.info(
+        "AI provider request start: mode=multipart, endpoint=%s, url=%s, body_bytes=%s, field_keys=%s, image_field=%s, image_count=%s, image_bytes=%s, images=%s, prompt_chars=%s, timeout_seconds=%s",
+        endpoint,
+        provider_url_log_label(url),
+        len(body),
+        sorted(active_fields),
+        image_field,
+        len(attached_images),
+        sum(item["bytes"] for item in attached_images),
+        attached_images,
+        len(str(fields.get("prompt") or "")),
+        timeout_seconds,
+    )
     request = urllib.request.Request(
         url,
         data=bytes(body),
@@ -1608,7 +1637,7 @@ def post_openai_compatible_multipart_json(
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return read_provider_json_response(response, operation=f"multipart:{endpoint}", started_at=started_at)
     except urllib.error.HTTPError as exc:
         raise AiProviderError(f"中转站图片编辑 HTTP 错误：{exc.code}") from exc
     except urllib.error.URLError as exc:
@@ -1618,29 +1647,166 @@ def post_openai_compatible_multipart_json(
 
 
 def write_response_image(response: dict[str, Any], image_path: Path, timeout_seconds: int) -> None:
-    first_image = {}
-    data = response.get("data")
-    if isinstance(data, list) and data:
-        first_image = data[0] if isinstance(data[0], dict) else {}
-    candidates = [
-        first_image.get("b64_json"),
-        first_image.get("base64"),
-        first_image.get("image"),
-        response.get("b64_json"),
-        response.get("base64"),
-        response.get("image"),
-    ]
-    for candidate in candidates:
-        if candidate:
-            image_path.write_bytes(base64.b64decode(strip_data_url(str(candidate))))
-            validate_downloaded_image(image_path)
-            return
-    url = first_image.get("url") or response.get("url")
-    if url:
+    logger.info("AI provider image response parse: shape=%s", summarize_response_shape(response))
+    for candidate in iter_response_strings(
+        response,
+        keys=("b64_json", "base64", "image", "image_base64", "image_b64", "content"),
+    ):
+        if not candidate:
+            continue
+        if candidate.startswith(("http://", "https://")):
+            continue
+        try:
+            decoded = base64.b64decode(normalize_base64(candidate), validate=True)
+        except (ValueError, TypeError):
+            continue
+        image_path.write_bytes(decoded)
+        validate_downloaded_image(image_path)
+        logger.info("AI provider image extracted from base64 response: bytes=%s", len(decoded))
+        return
+
+    for url in iter_response_strings(
+        response,
+        keys=("url", "image_url", "imageUrl", "download_url", "output_url"),
+    ):
+        if not url or not url.startswith(("http://", "https://")):
+            continue
+        logger.info("AI provider image URL returned, downloading: url=%s, timeout_seconds=%s", provider_url_log_label(url), timeout_seconds)
         image_path.write_bytes(download_image(str(url), timeout_seconds))
         validate_downloaded_image(image_path)
+        logger.info("AI provider image downloaded from URL: bytes=%s", image_path.stat().st_size)
         return
-    raise AiProviderError("图片接口返回缺少 b64_json 或 url")
+    raise AiProviderError(f"图片接口返回缺少可用图片字段，响应结构：{summarize_response_shape(response)}")
+
+
+def read_provider_json_response(response: Any, *, operation: str, started_at: float) -> dict[str, Any]:
+    content_length = response.headers.get("Content-Length")
+    content_type = response.headers.get("Content-Type", "")
+    expected_bytes = parse_content_length(content_length)
+    logger.info(
+        "AI provider response headers: operation=%s, status=%s, content_type=%s, content_length=%s, elapsed_seconds=%.1f",
+        operation,
+        response.getcode(),
+        content_type,
+        content_length,
+        time.perf_counter() - started_at,
+    )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        read_size = min(1024 * 1024, expected_bytes - total) if expected_bytes else 1024 * 1024
+        if read_size <= 0:
+            break
+        chunk = read_provider_response_chunk(response, read_size, content_length_known=expected_bytes is not None)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_PROVIDER_JSON_BYTES:
+            raise AiProviderError("中转站返回 JSON 超过大小限制")
+        chunks.append(chunk)
+        if expected_bytes is None:
+            payload = try_parse_provider_json_bytes(b"".join(chunks))
+            if payload is not None:
+                logger.info(
+                    "AI provider response body parsed before EOF: operation=%s, response_bytes=%s, elapsed_seconds=%.1f",
+                    operation,
+                    total,
+                    time.perf_counter() - started_at,
+                )
+                logger.info("AI provider response shape: operation=%s, shape=%s", operation, summarize_response_shape(payload))
+                return payload
+    logger.info(
+        "AI provider response body read: operation=%s, response_bytes=%s, elapsed_seconds=%.1f",
+        operation,
+        total,
+        time.perf_counter() - started_at,
+    )
+    payload = parse_provider_json_bytes(b"".join(chunks))
+    logger.info("AI provider response shape: operation=%s, shape=%s", operation, summarize_response_shape(payload))
+    return payload
+
+
+def read_provider_response_chunk(response: Any, size: int, *, content_length_known: bool) -> bytes:
+    if content_length_known:
+        return response.read(size)
+    read1 = getattr(response, "read1", None)
+    if callable(read1):
+        return read1(size)
+    return response.read(size)
+
+
+def parse_content_length(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def try_parse_provider_json_bytes(raw: bytes) -> dict[str, Any] | None:
+    try:
+        return parse_provider_json_bytes(raw)
+    except AiProviderError:
+        return None
+
+
+def parse_provider_json_bytes(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise AiProviderError("中转站返回不是 UTF-8 JSON") from exc
+    except json.JSONDecodeError as exc:
+        raise AiProviderError("中转站返回不是有效 JSON") from exc
+    if not isinstance(payload, dict):
+        raise AiProviderError("中转站返回 JSON 顶层不是对象")
+    return payload
+
+
+def summarize_response_shape(value: Any, *, depth: int = 0) -> dict[str, Any]:
+    if depth >= 4:
+        return {"type": type(value).__name__}
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        summary: dict[str, Any] = {"type": "dict", "keys": keys[:20]}
+        for key in ("data", "images", "image", "image_url", "output", "result", "results", "content", "choices"):
+            if key in value:
+                summary[key] = summarize_response_shape(value[key], depth=depth + 1)
+        return summary
+    if isinstance(value, list):
+        summary = {"type": "list", "length": len(value)}
+        if value:
+            summary["first"] = summarize_response_shape(value[0], depth=depth + 1)
+        return summary
+    return {"type": type(value).__name__}
+
+
+def iter_response_strings(value: Any, *, keys: tuple[str, ...], depth: int = 0) -> Any:
+    if depth > 5:
+        return
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                yield candidate.strip()
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                yield from iter_response_strings(child, keys=keys, depth=depth + 1)
+    elif isinstance(value, list):
+        for item in value[:20]:
+            yield from iter_response_strings(item, keys=keys, depth=depth + 1)
+
+
+def normalize_base64(value: str) -> str:
+    return re.sub(r"\s+", "", strip_data_url(value.strip()))
+
+
+def provider_url_log_label(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    path = parsed.path or "/"
+    return f"{parsed.scheme}://{host}{path}"
 
 
 def strip_data_url(value: str) -> str:

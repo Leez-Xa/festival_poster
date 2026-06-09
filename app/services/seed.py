@@ -9,11 +9,12 @@ from PIL import Image
 
 from app.config import ROOT_DIR, SYSTEM_DIR, ensure_storage_dirs
 from app.db import upsert_asset, upsert_product
+from app.services.product_matching import expand_product_terms, normalize_match_text
 from app.utils import copy_or_create_placeholder, image_metadata, now_iso, serialize_asset
 from config.seed_data import BACKGROUND_SOURCES, PRODUCTS, SYSTEM_ASSET_SOURCES
 
 MAX_INDEX_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_INDEX_IMAGE_PIXELS = 50_000_000
+MAX_INDEX_IMAGE_PIXELS = 100_000_000
 MAX_INDEX_IMAGE_EDGE = 12_000
 PRODUCT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 BRAND_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -237,31 +238,96 @@ def seed_product_material_assets() -> None:
                     file_path=image_path,
                     source="product_material",
                     product_id=product_id,
-                    tags=[directory.name, "系统产品素材"],
+                    tags=product_image_tags(directory, image_path),
                 )
             )
+
+
+def product_image_tags(product_dir: Path, image_path: Path) -> list[str]:
+    try:
+        relative = image_path.relative_to(product_dir)
+        parent_parts = list(relative.parts[:-1])
+    except ValueError:
+        parent_parts = []
+
+    raw_parts = [
+        product_dir.name,
+        *parent_parts,
+        image_path.stem,
+        image_path.name,
+    ]
+    tags: list[str] = []
+    for part in raw_parts:
+        add_product_image_tag(tags, part)
+        for term in expand_product_terms(part):
+            add_product_image_tag(tags, term)
+    add_product_image_tag(tags, "系统产品素材")
+    return tags[:24]
+
+
+def add_product_image_tag(tags: list[str], value: str) -> None:
+    clean = str(value or "").strip()
+    if not clean or len(clean) > 80:
+        return
+    normalized = normalize_match_text(clean)
+    if not normalized:
+        return
+    if all(normalize_match_text(tag) != normalized for tag in tags):
+        tags.append(clean)
 
 
 def select_product_images(directory: Path, limit: int = 4) -> list[Path]:
     image_paths = [
         path
         for path in directory.rglob("*")
-        if is_indexable_product_image(path)
+        if is_product_image_file(path)
     ]
-    ranked = sorted(image_paths, key=image_rank)
-    return ranked[:limit]
+    ranked = sorted(
+        (path for path in image_paths if is_indexable_product_image(path)),
+        key=image_rank,
+    )
+    selected = ranked[:limit]
+    if len(selected) >= limit:
+        return selected
+
+    selected_keys = {path.resolve() for path in selected}
+    fallback = sorted(
+        (
+            path
+            for path in image_paths
+            if path.resolve() not in selected_keys and is_fallback_product_image(path)
+        ),
+        key=fallback_image_rank,
+    )
+    return [*selected, *fallback[: max(0, limit - len(selected))]]
 
 
-def is_indexable_product_image(path: Path) -> bool:
+def is_product_image_file(path: Path) -> bool:
     if not path.is_file():
         return False
     if path.suffix.lower() not in PRODUCT_IMAGE_SUFFIXES:
         return False
     if path.name.startswith("._") or path.name == ".DS_Store":
         return False
+    return True
+
+
+def is_indexable_product_image(path: Path) -> bool:
+    if not is_product_image_file(path):
+        return False
     text = str(path).lower()
     if any(term.lower() in text for term in DETAIL_IMAGE_TERMS):
         return False
+    return is_safe_product_image(path)
+
+
+def is_fallback_product_image(path: Path) -> bool:
+    if not is_product_image_file(path):
+        return False
+    return is_safe_product_image(path)
+
+
+def is_safe_product_image(path: Path) -> bool:
     try:
         size = path.stat().st_size
     except OSError:
@@ -292,6 +358,24 @@ def image_rank(path: Path) -> tuple[int, int, str]:
     for term in positive_terms:
         if term.lower() in text:
             score -= 12
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return (score, -size, str(path))
+
+
+def fallback_image_rank(path: Path) -> tuple[int, int, str]:
+    text = str(path).lower()
+    score = 100
+    positive_terms = ("高清", "产品高清图", "主图", "头图", "正视图", "侧视图", "产品")
+    detail_terms = ("详情页", "详情图", "页面", "长图", "折页", "看稿")
+    for term in positive_terms:
+        if term.lower() in text:
+            score -= 12
+    for term in detail_terms:
+        if term.lower() in text:
+            score += 8
     try:
         size = path.stat().st_size
     except OSError:

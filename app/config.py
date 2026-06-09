@@ -70,10 +70,10 @@ class AISettings:
         self.image_response_format = os.getenv("AI_IMAGE_RESPONSE_FORMAT", "b64_json").strip()
         self.text_timeout_seconds = _read_timeout(os.getenv("AI_TEXT_TIMEOUT_SECONDS", "30"), default=30)
         self.image_timeout_seconds = _read_timeout(
-            os.getenv("AI_IMAGE_TIMEOUT_SECONDS", "300"),
-            default=300,
+            os.getenv("AI_IMAGE_TIMEOUT_SECONDS", "900"),
+            default=900,
             minimum=30,
-            maximum=300,
+            maximum=1200,
         )
         self.require_image_fusion = _read_bool(os.getenv("AI_REQUIRE_IMAGE_FUSION", "true"), default=True)
 

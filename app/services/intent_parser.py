@@ -6,6 +6,15 @@ from typing import Any
 from app.db import list_products
 from app.services.assets import list_assets
 from app.services.one_click_guardrails import evaluate_one_click_guardrails
+from app.services.product_matching import (
+    asset_match_terms,
+    exact_model_token_matched,
+    longest_matched_term_length,
+    normalize_match_text,
+    product_match_terms,
+    score_weighted_terms,
+    sort_product_assets_for_instruction,
+)
 from config.seed_data import MARKETING_NODES
 
 
@@ -259,7 +268,7 @@ def analyze_one_click_intent(raw_instruction: str) -> dict[str, Any]:
     else:
         visual_elements = merge_unique(visual_elements, fallback_visual_elements(node))
 
-    product_assets = list_product_assets(product["id"]) if product else []
+    product_assets = list_product_assets(product["id"], raw_instruction) if product else []
     if product and not product_assets:
         warnings.append("已匹配到产品，但没有找到可用产品图素材，请先上传或补充产品图。")
 
@@ -335,10 +344,6 @@ def normalize_instruction(value: str) -> str:
     return re.sub(r"\s+", "", value or "").strip()
 
 
-def normalize_match_text(value: str) -> str:
-    return re.sub(r"[\s\-_，。、“”‘’（）()【】\[\]:：/\\]+", "", value or "").casefold()
-
-
 def find_terms(text: str, terms: list[str]) -> list[str]:
     normalized = normalize_match_text(text)
     found: list[str] = []
@@ -384,28 +389,34 @@ def cleanup_visual_element(value: str) -> str:
 
 
 def rank_products(raw_instruction: str, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = normalize_match_text(raw_instruction)
     ranked: list[dict[str, Any]] = []
     for product in products:
-        score = 0
-        reasons: list[str] = []
-        for field, weight in (("name", 90), ("model", 80), ("id", 30), ("category", 15)):
-            value = normalize_match_text(str(product.get(field, "")))
-            if value and value in normalized:
-                score += weight
-                reasons.append(f"matched_{field}")
-        for point in product.get("selling_points", []) or []:
-            value = normalize_match_text(str(point))
-            if value and value in normalized:
-                score += 8
-                reasons.append("matched_selling_point")
+        terms = product_match_terms(product)
+        score, reasons = score_weighted_terms(raw_instruction, terms)
         model = str(product.get("model", "")).strip()
-        if model and re.search(rf"(?<![A-Za-z0-9]){re.escape(model)}(?![A-Za-z0-9])", raw_instruction, re.I):
-            score += 40
+        if model and exact_model_token_matched(raw_instruction, model):
+            score += 35
             reasons.append("exact_model_token")
+        longest_match = longest_matched_term_length(raw_instruction, terms)
         if score >= 25:
-            ranked.append({"product": product, "score": min(score, 100), "reason": ",".join(sorted(set(reasons)))})
-    return sorted(ranked, key=lambda item: item["score"], reverse=True)
+            ranked.append(
+                {
+                    "product": product,
+                    "score": min(score, 100),
+                    "_sort_score": score,
+                    "_longest_match": longest_match,
+                    "reason": ",".join(sorted(set(reasons))),
+                }
+            )
+    return sorted(
+        ranked,
+        key=lambda item: (
+            item["_sort_score"],
+            item["_longest_match"],
+            1 if item["product"].get("source") == "material_folder" else 0,
+        ),
+        reverse=True,
+    )
 
 
 def rank_nodes(raw_instruction: str) -> list[dict[str, Any]]:
@@ -486,11 +497,11 @@ def cleanup_product_hint(value: str) -> str:
     return cleaned[:40]
 
 
-def list_product_assets(product_id: str) -> list[dict[str, Any]]:
+def list_product_assets(product_id: str, raw_instruction: str = "") -> list[dict[str, Any]]:
     product_assets = list_assets(asset_type="product_image", source="product_material", product_id=product_id)
-    if product_assets:
-        return product_assets
-    return list_assets(asset_type="product_image", product_id=product_id)
+    if not product_assets:
+        product_assets = list_assets(asset_type="product_image", product_id=product_id)
+    return sort_product_assets_for_instruction(product_assets, raw_instruction)
 
 
 def default_brand_assets() -> dict[str, Any]:
@@ -686,7 +697,6 @@ def match_product_from_assets(
     raw_instruction: str,
     product_candidates: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
-    normalized = normalize_match_text(raw_instruction)
     products_by_id = {product["id"]: product for product in list_products()}
     best: dict[str, Any] | None = None
     for asset in list_assets(asset_type="product_image"):
@@ -694,32 +704,32 @@ def match_product_from_assets(
         product = products_by_id.get(product_id)
         if not product:
             continue
+
         terms = [
-            product_id,
-            str(product.get("name") or ""),
-            str(product.get("model") or ""),
-            str(asset.get("name") or ""),
-            str(asset.get("file_name") or ""),
-            " ".join(str(tag) for tag in asset.get("tags", []) or []),
+            (product_id, 35, "matched_product_id"),
+            *product_match_terms(product),
+            *asset_match_terms(asset),
         ]
-        score = 0
-        for term in terms:
-            value = normalize_match_text(term)
-            if value and value in normalized:
-                score += 35 if term == product_id else 25
+        score, reasons = score_weighted_terms(raw_instruction, terms)
         model = str(product.get("model") or "").strip()
-        if model and re.search(rf"(?<![A-Za-z0-9]){re.escape(model)}(?![A-Za-z0-9])", raw_instruction, re.I):
-            score += 40
+        if model and exact_model_token_matched(raw_instruction, model):
+            score += 35
+            reasons.append("exact_model_token")
         if score and (not best or score > best["score"]):
-            best = {"product": product, "asset": asset, "score": min(score, 100)}
+            best = {
+                "product": product,
+                "asset": asset,
+                "score": min(score, 100),
+                "reason": ",".join(sorted(set(reasons))) or "matched_product_asset",
+            }
 
     if not best:
         return None, [], product_candidates
 
     product = best["product"]
-    product_assets = list_product_assets(product["id"])
+    product_assets = list_product_assets(product["id"], raw_instruction)
     product_candidates = [
-        {"product": product, "score": best["score"], "reason": "matched_product_asset"},
+        {"product": product, "score": best["score"], "reason": best["reason"]},
         *product_candidates,
     ]
     return product, product_assets, product_candidates

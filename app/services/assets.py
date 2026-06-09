@@ -21,7 +21,7 @@ from app.utils import new_id, public_asset, safe_filename, serialize_asset
 
 ALLOWED_ASSET_TYPES = {"product_image", "scene_image", "logo", "qrcode", "bottom_bar", "background"}
 MAX_PUBLIC_PRODUCT_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_PUBLIC_PRODUCT_IMAGE_PIXELS = 50_000_000
+MAX_PUBLIC_PRODUCT_IMAGE_PIXELS = 100_000_000
 MAX_PUBLIC_PRODUCT_IMAGE_EDGE = 12_000
 
 
@@ -36,15 +36,28 @@ def list_assets(
 
 def dedupe_system_brand_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for asset in assets:
         key = system_brand_asset_key(asset)
-        if key and key in seen:
-            continue
         if key:
-            seen.add(key)
+            previous_index = seen.get(key)
+            if previous_index is not None:
+                if system_brand_asset_priority(asset) > system_brand_asset_priority(deduped[previous_index]):
+                    deduped[previous_index] = asset
+                continue
+            seen[key] = len(deduped)
         deduped.append(asset)
     return deduped
+
+
+def system_brand_asset_priority(asset: dict[str, Any]) -> int:
+    public_url = str(asset.get("public_url") or "")
+    file_path = str(asset.get("_file_path") or asset.get("file_path") or "")
+    if "/api/v1/assets/" in public_url:
+        return 30
+    if "二维码汇总" in file_path or "qrcode" not in public_url.lower():
+        return 20
+    return 10
 
 
 def system_brand_asset_key(asset: dict[str, Any]) -> str:

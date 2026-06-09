@@ -11,6 +11,7 @@ from app.services.assets import list_assets
 from app.services.intent_parser import parse_one_click_intent
 from app.services.one_click_guardrails import ensure_one_click_not_blocked
 from app.services.poster import create_task
+from app.services.product_matching import sort_product_assets_for_instruction
 from app.services.prompt_builder import build_one_click_prompt_diagnostics
 
 
@@ -48,7 +49,7 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
             details={"product_id": product_id},
         )
 
-    product_asset_ids = choose_product_asset_ids(product_id, overrides)
+    product_asset_ids = choose_product_asset_ids(product_id, overrides, parsed["raw_instruction"])
     scene_asset_id = overrides.scene_asset_id
     if not scene_asset_id and not product_asset_ids:
         raise ApiError(
@@ -132,10 +133,12 @@ def build_task_payload(parsed: dict[str, Any], overrides: OneClickPosterOverride
     return task_payload, diagnostics
 
 
-def choose_product_asset_ids(product_id: str, overrides: OneClickPosterOverrides) -> list[str]:
+def choose_product_asset_ids(product_id: str, overrides: OneClickPosterOverrides, raw_instruction: str = "") -> list[str]:
     if overrides.product_asset_ids is not None:
         return overrides.product_asset_ids[:5]
-    return [asset["id"] for asset in list_assets(asset_type="product_image", product_id=product_id)[:3]]
+    assets = list_assets(asset_type="product_image", product_id=product_id)
+    ranked = sort_product_assets_for_instruction(assets, raw_instruction)
+    return [asset["id"] for asset in ranked[:3]]
 
 
 def choose_first_asset_id(asset_type: str) -> str | None:
@@ -148,7 +151,7 @@ def choose_qrcode_asset_ids(overrides: OneClickPosterOverrides) -> list[str]:
         return overrides.qrcode_asset_ids[:4]
     if overrides.qrcode_asset_id is not None:
         return [overrides.qrcode_asset_id] if overrides.qrcode_asset_id else []
-    qrcodes = list_assets(asset_type="qrcode")
+    qrcodes = sorted(list_assets(asset_type="qrcode"), key=qrcode_asset_priority)
     preferred_names = ("朴道公众号", "朴道官方视频号", "公众号", "视频号")
     selected: list[str] = []
     for name in preferred_names:
@@ -163,6 +166,22 @@ def choose_qrcode_asset_ids(overrides: OneClickPosterOverrides) -> list[str]:
         if asset["id"] not in selected:
             selected.append(asset["id"])
     return selected[:2]
+
+
+def qrcode_asset_priority(asset: dict[str, Any]) -> tuple[int, int, str]:
+    public_url = str(asset.get("public_url") or "")
+    name = f"{asset.get('name', '')} {asset.get('file_name', '')}"
+    is_demo_storage_placeholder = public_url.startswith("/storage/system/qrcode_")
+    brand_rank = 0
+    if "朴道公众号" in name:
+        brand_rank = -30
+    elif "朴道官方视频号" in name:
+        brand_rank = -20
+    elif "公众号" in name:
+        brand_rank = -10
+    elif "视频号" in name:
+        brand_rank = -5
+    return (1 if is_demo_storage_placeholder else 0, brand_rank, name.casefold())
 
 
 def build_custom_requirement(raw_instruction: str, style_keywords: list[str], visual_elements: list[str]) -> str:
