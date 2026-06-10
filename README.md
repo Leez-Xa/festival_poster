@@ -39,7 +39,7 @@
 | Frontend | Static HTML / CSS / JavaScript |
 | Database | SQLite |
 | Storage | Local `storage/` |
-| Deployment | Windows local / Aliyun ECS / Vercel auxiliary config |
+| Deployment | Local Windows startup |
 
 ## Quick Start
 
@@ -180,8 +180,7 @@ app/                         后端接口、任务、素材、AI 调用与合成
 config/                      节点、产品、规则等 seed 数据
 frontend/                    前端静态页面和交互脚本
 scripts/                     本地检查与测试脚本
-docs/                        测试计划与部署文档
-deploy/                      阿里云部署参考配置
+docs/                        本地测试与验收文档
 storage/                     本地数据库、上传文件、生成结果，默认不提交
 素材/                        原始素材目录，只读使用
 ```
@@ -233,25 +232,10 @@ $env:ONE_CLICK_SMOKE_BASE_URL="http://127.0.0.1:8000"
 .\.venv\Scripts\python.exe scripts\one_click_smoke_test.py
 ```
 
-## Deployment
-
-阿里云 ECS 部署参考见 [docs/aliyun_deploy.md](docs/aliyun_deploy.md)。
-
-推荐部署方式：
-
-- Ubuntu 22.04 或 24.04
-- Python venv
-- systemd 托管 FastAPI
-- Nginx 反向代理到后端
-- `storage/` 作为持久化目录
-- `.env` 仅保留在服务器本地
-- 启用 HTTPS 后再正式对外使用
-
 ## Related Docs
 
 - [docs/one_click_test_plan.md](docs/one_click_test_plan.md)
 - [frontend/README.md](frontend/README.md)
-- [docs/aliyun_deploy.md](docs/aliyun_deploy.md)
 
 ## Safety Notes
 
@@ -260,3 +244,12 @@ $env:ONE_CLICK_SMOKE_BASE_URL="http://127.0.0.1:8000"
 - 不要删除、移动、覆盖 `素材/`、PRD、备份 zip 和备份目录。
 - 原始素材目录按只读资产使用，生成结果写入 `storage/`。
 - 生产环境建议启用 `API_ACCESS_TOKEN` 并收紧 CORS。
+
+## Public Repo Scope
+
+公开仓库默认只保留“本地运行和联调”所需内容，不包含：
+
+- 私有 `.env`
+- `素材/` 原始业务素材
+- `storage/`、`tmp/`、`outputs/` 等本地运行产物
+- 云服务器部署脚本或云平台专用配置

@@ -8,6 +8,7 @@ __pycache__/
 .mypy_cache/
 .playwright-cli/
 output/
+outputs/
 logs/
 tmp/
 素材/
