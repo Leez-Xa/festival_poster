@@ -599,5 +599,46 @@
     resetTaskView();
   }
 
+  function qrcodeOverlayNotice(task) {
+    const overlay = task?.fusion?.exact_qrcode_overlay || {};
+    if (!overlay.enabled) return "";
+    const notices = [];
+    if (overlay.cleanup_applied) {
+      notices.push("已自动清理 AI 生成的二维码白框后再贴真码");
+    }
+    if (overlay.confidence === "low" || (overlay.warning_codes || []).includes("qrcode_template_fallback_used")) {
+      notices.push("本次二维码定位为回退模式，可能存在轻微偏差");
+    }
+    return notices.join("；");
+  }
+
+  function renderTaskResult(task) {
+    const copy = extractCopy(task);
+    const notice = qrcodeOverlayNotice(task);
+    els.copy.textContent = copy.title || copy.subtitle
+      ? `主标题：${copy.title || "未返回"}；副标题：${copy.subtitle || "未返回"}`
+      : ["pending", "processing"].includes(task?.status)
+        ? "AI 文案生成中"
+        : "后端未返回显式文案字段";
+    const posterUrl = task?.poster?.jpg_url || state.poster?.jpg_url || "";
+    els.posterUrl.textContent = posterUrl || "等待后端返回";
+    if (posterUrl) {
+      const resolved = resolveReturnedUrl(posterUrl);
+      els.openBtn.href = resolved;
+      els.openBtn.hidden = false;
+    }
+    renderTaskError(task?.error, notice);
+  }
+
+  function renderTaskError(error, notice = "") {
+    if (!error) {
+      els.error.textContent = notice || "无";
+      return;
+    }
+    const reason = formatBlockReasons(error.details);
+    const suffix = notice ? `；${notice}` : "";
+    els.error.textContent = `${error.code || "TASK_ERROR"}: ${error.message || error.message || "任务异常"}${reason ? ` ${reason}` : ""}${suffix}`;
+  }
+
   init();
 })();

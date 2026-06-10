@@ -1963,3 +1963,80 @@ async function init() {
 }
 
 init();
+
+function formatQrcodeOverlayNotice(fusion) {
+  const overlay = fusion?.exact_qrcode_overlay || {};
+  if (!overlay.enabled) return "";
+  const notices = [];
+  if (overlay.cleanup_applied) {
+    notices.push("已自动清理 AI 生成的二维码白框后再贴真码");
+  }
+  if (overlay.confidence === "low" || (overlay.warning_codes || []).includes("qrcode_template_fallback_used")) {
+    notices.push("本次二维码定位为回退模式，可能存在轻微偏差");
+  }
+  return notices.join("；");
+}
+
+function formatFusionResult(fusion) {
+  if (!fusion) {
+    if (state.activeTask?.status === "failed" && state.activeTask?.error?.code === "AI_IMAGE_FUSION_FAILED") {
+      return "图片模型未成功调用，等待稳定兜底结果";
+    }
+    return ["pending", "processing"].includes(state.activeTask?.status) ? "图片编辑融合或本地合成中" : "等待后端返回";
+  }
+
+  const fallback = fusion.fallback || {};
+  const attempts = Array.isArray(fusion.attempts) ? fusion.attempts : [];
+  const lastAttempt = attempts.at(-1) || {};
+  const overlay = fusion.exact_qrcode_overlay || {};
+  const pieces = [
+    `provider=${fusion.provider || "unknown"}`,
+    `mode=${fusion.mode || "unknown"}`,
+    `model=${fusion.model || "unknown"}`,
+    `fallback.used=${fallback.used ? "true" : "false"}`,
+    `attempts=${attempts.length}`,
+  ];
+  if (overlay.enabled) {
+    pieces.push(`qrcode.confidence=${overlay.confidence || "unknown"}`);
+    if (overlay.cleanup_applied) pieces.push("qrcode.cleanup_applied=true");
+    if (Array.isArray(overlay.warning_codes) && overlay.warning_codes.length) {
+      pieces.push(`qrcode.warning_codes=${overlay.warning_codes.join("|")}`);
+    }
+  }
+  if (fusion.rerender_reused_scene) {
+    pieces.push("rerender.reused_scene=true");
+  }
+  if (fallback.reason) {
+    pieces.push(`fallback.reason=${fallback.reason}`);
+  }
+  if (lastAttempt.error) {
+    pieces.push(`last.error=${lastAttempt.error}`);
+  }
+  return pieces.join("；");
+}
+
+function renderBackendResult() {
+  els.resultTaskStatus.textContent = state.activeTask
+    ? `${statusLabel(state.activeTask.status)}${state.activeTask.progress !== undefined ? ` 路 ${state.activeTask.progress}%` : ""}`
+    : "未创建";
+
+  const copy = extractBackendCopy();
+  els.resultCopy.textContent = copy.title || copy.subtitle
+    ? `主标题：${copy.title || "未返回"}；副标题：${copy.subtitle || "未返回"}`
+    : ["pending", "processing"].includes(state.activeTask?.status)
+      ? "AI 文案生成中"
+      : "后端未返回显式文案字段";
+  els.resultPosterUrl.textContent = state.poster?.jpg_url || state.activeTask?.poster?.jpg_url || "等待后端返回";
+
+  const overlayNotice = formatQrcodeOverlayNotice(state.activeTask?.fusion);
+  const fusionText = formatFusionResult(state.activeTask?.fusion);
+  els.resultFusion.textContent = overlayNotice ? `${fusionText}；${overlayNotice}` : fusionText;
+
+  const taskError = state.activeTask?.error;
+  if (!taskError) {
+    els.resultError.textContent = overlayNotice || "无";
+  } else {
+    const suffix = overlayNotice ? `；${overlayNotice}` : "";
+    els.resultError.textContent = `${taskError.code || "TASK_ERROR"}: ${taskError.message || "任务异常"}${formatTaskErrorDetails(taskError.details)}${suffix}`;
+  }
+}
